@@ -1,0 +1,43 @@
+# Build 目錄
+build/
+cmake-build-*/
+
+# 執行檔
+*.exe
+*.out
+inode_fs_demo
+
+# 檔案系統映像檔
+*.img
+filesystem.img
+
+# IDE 相關
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS
+.DS_Store
+
+# 編譯產物
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dll
+*.dylib
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
