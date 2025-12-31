@@ -28,7 +28,7 @@ int main() {
     // ===== 1. 格式化檔案系統 =====
     printSeparator();
     std::cout << "步驟 1: 格式化檔案系統" << std::endl;
-    if (!fs.format("filesystem.img", false)) {
+    if (!fs.format("disk.img", false)) {
         std::cerr << "格式化失敗" << std::endl;
         return 1;
     }
@@ -68,8 +68,8 @@ int main() {
     content2 += "支援的功能:\n";
     content2 += "1. 創建/刪除文件和目錄\n";
     content2 += "2. 讀取/寫入文件\n";
-    content2 += "3. 多級索引支援大文件\n";
-    content2 += "4. 可切換硬碟/記憶體儲存\n";
+    content2 += "3. 小型檔案系統 (16MB)\n";
+    content2 += "4. 持久化至 disk.img\n";
     fs.write("/home/user/documents/readme.txt", content2.c_str(), content2.size());
     std::cout << "已寫入 " << content2.size() << " bytes 到 /home/user/documents/readme.txt" << std::endl;
 
@@ -80,13 +80,13 @@ int main() {
     std::cout << std::endl;
     printFileContent("/home/user/documents/readme.txt", fs);
 
-    // ===== 5. 測試大文件（多級索引） =====
+    // ===== 5. 測試較大文件 (Max 16KB) =====
     printSeparator();
-    std::cout << "步驟 5: 測試大文件寫入（測試間接區塊）" << std::endl;
+    std::cout << "步驟 5: 測試多區塊寫入 (12KB)" << std::endl;
     fs.create("/tmp/bigfile.dat", false);
     
-    // 寫入 60KB 的資料（超過 12 個直接區塊 = 48KB）
-    const uint32_t big_size = 60 * 1024;
+    // 寫入 12KB 的資料 (3個區塊, 上限為 4個區塊/16KB)
+    const uint32_t big_size = 12 * 1024;
     std::vector<char> big_data(big_size);
     for (uint32_t i = 0; i < big_size; ++i) {
         big_data[i] = 'A' + (i % 26);
@@ -158,7 +158,7 @@ int main() {
     // ===== 10. 重新掛載並驗證持久性 =====
     printSeparator();
     std::cout << "步驟 10: 重新掛載並驗證資料持久性" << std::endl;
-    if (fs.mount("filesystem.img")) {
+    if (fs.mount("disk.img")) {
         std::cout << "\n驗證資料是否保存:" << std::endl;
         printFileContent("/home/user/hello.txt", fs);
         

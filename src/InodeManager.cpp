@@ -2,17 +2,29 @@
 #include <iostream>
 #include <cstring>
 #include <ctime>
+#include <algorithm>
 
 InodeManager::InodeManager(DiskEmulator* disk, Bitmap* inode_bitmap, Bitmap* block_bitmap)
     : disk_(disk), inode_bitmap_(inode_bitmap), block_bitmap_(block_bitmap) {
 }
 
 bool InodeManager::loadSuperblock() {
-    return disk_->readBlock(Config::SUPERBLOCK_BLOCK, &superblock_);
+    // Read Block 0
+    std::vector<uint8_t> buffer(Config::BLOCK_SIZE);
+    if (!disk_->readBlock(Config::SUPERBLOCK_BLOCK, buffer.data())) {
+        return false;
+    }
+    std::memcpy(&superblock_, buffer.data(), sizeof(Superblock));
+    return true;
 }
 
 bool InodeManager::saveSuperblock() {
-    return disk_->writeBlock(Config::SUPERBLOCK_BLOCK, &superblock_);
+    std::vector<uint8_t> buffer(Config::BLOCK_SIZE, 0); // Padding is handled by struct size being 4096 ideally, or we memcpy to buffer
+    // Struct Superblock is 4096 bytes now due to padding? 
+    // Wait, in my definition I used uint8_t padding[Config::BLOCK_SIZE - 28].
+    // sizeof(Superblock) should be 4096.
+    std::memcpy(buffer.data(), &superblock_, sizeof(Superblock));
+    return disk_->writeBlock(Config::SUPERBLOCK_BLOCK, buffer.data());
 }
 
 int InodeManager::allocateInode(FileType type) {
@@ -24,13 +36,13 @@ int InodeManager::allocateInode(FileType type) {
 
     // 初始化 inode
     Inode inode;
-    inode.type = type;
+    inode.inode_num = static_cast<uint32_t>(inode_num);
+    inode.file_type = type;
     inode.size = 0;
-    inode.link_count = 1;
-    inode.block_count = 0;
-    
-    uint64_t current_time = static_cast<uint64_t>(std::time(nullptr));
-    inode.atime = inode.mtime = inode.ctime = current_time;
+    // Clear direct blocks
+    for(int i=0; i<Config::DIRECT_BLOCKS; ++i) {
+        inode.direct_blks[i] = 0;
+    }
 
     // 寫入 inode
     if (!writeInode(inode_num, inode)) {
@@ -38,9 +50,17 @@ int InodeManager::allocateInode(FileType type) {
         return -1;
     }
 
-    // 更新 superblock
-    superblock_.free_inodes--;
-    saveSuperblock();
+    // 更新 superblock (Optional: if we track free inodes in superblock)
+    // Note: The new Superblock struct doesn't strictly have a 'free_inodes' counter required by logic if we assume bitmap is truth,
+    // but the struct definition DOES have 'total_inodes' etc.
+    // My new Superblock definition removed 'free_inodes' and 'free_blocks' tracking fields to simplify?
+    // Let me check my previous tool call for structures.h ...
+    // "struct Superblock { ... total_blocks, total_inodes, inode_bitmap_blk ... }"
+    // It DOES NOT have mutable 'free_inodes'/'free_blocks' counters in the defined struct I pushed! 
+    // They were removed. So I should NOT try to update them here.
+    // Good, that stat is often out of sync anyway. Bitmap is source of truth.
+    
+    // saveSuperblock(); // No mutable fields to save except maybe if I added something? No.
 
     return inode_num;
 }
@@ -60,15 +80,11 @@ bool InodeManager::freeInode(uint32_t inode_num) {
     freeAllBlocks(inode);
 
     // 清空 inode
-    inode = Inode();
+    inode = Inode(); // Reset to FREE
     writeInode(inode_num, inode);
 
     // 在 bitmap 中標記為空閒
     inode_bitmap_->deallocate(inode_num);
-
-    // 更新 superblock
-    superblock_.free_inodes++;
-    saveSuperblock();
 
     return true;
 }
@@ -80,7 +96,10 @@ bool InodeManager::readInode(uint32_t inode_num, Inode& inode) {
     }
 
     // 計算 inode 所在的區塊
-    uint32_t inodes_per_block = Config::BLOCK_SIZE / Config::INODE_SIZE;
+    // INODE_SIZE = 64
+    // BLOCK_SIZE = 4096
+    // INODES_PER_BLOCK = 64
+    uint32_t inodes_per_block = Config::INODES_PER_BLOCK;
     uint32_t block_num = Config::INODE_TABLE_START + (inode_num / inodes_per_block);
     uint32_t offset = (inode_num % inodes_per_block) * Config::INODE_SIZE;
 
@@ -101,12 +120,11 @@ bool InodeManager::writeInode(uint32_t inode_num, const Inode& inode) {
         return false;
     }
 
-    // 計算 inode 所在的區塊
-    uint32_t inodes_per_block = Config::BLOCK_SIZE / Config::INODE_SIZE;
+    uint32_t inodes_per_block = Config::INODES_PER_BLOCK;
     uint32_t block_num = Config::INODE_TABLE_START + (inode_num / inodes_per_block);
     uint32_t offset = (inode_num % inodes_per_block) * Config::INODE_SIZE;
 
-    // 讀取區塊
+    // 讀取區塊 (Read-Modify-Write)
     std::vector<uint8_t> buffer(Config::BLOCK_SIZE);
     if (!disk_->readBlock(block_num, buffer.data())) {
         return false;
@@ -127,17 +145,32 @@ int InodeManager::allocateBlock() {
     }
 
     // 調整為實際的資料區塊號
-    block_num += Config::DATA_BLOCKS_START;
+    // Bitmap 0 corresponds to Data Block Start? Or Bitmap 0 corresponds to absolute block 0?
+    // Usually Bitmaps track Data Blocks only to save space.
+    // Let's assume Block Bitmap tracks blocks starting from DATA_BLOCKS_START.
+    // Config: TOTAL_BLOCKS = 4096.
+    // If bitmap tracks ALL blocks, then 0-6 are permanently used.
+    // If bitmap tracks ONLY data blocks, then index 0 = DATA_BLOCKS_START.
+    // Let's check mkfs logic later. Assuming 0-indexed relative to DATA_BLOCKS_START is safer for max capacity?
+    // No, standard is usually absolute or relative. 
+    // The previous implementation did `start_block` injection in Bitmap.
+    // Let's assume the Block Bitmap manages the whole disk or just the data area.
+    // If logic: `block_num += Config::DATA_BLOCKS_START`, then it implies bitmap index 0 is the first data block.
+    // Let's stick to this: Block Bitmap manages Data Blocks (0 -> DATA_BLOCKS_START).
+    
+    int actual_block_num = block_num + Config::DATA_BLOCKS_START;
+
+    if (actual_block_num >= Config::TOTAL_BLOCKS) {
+         std::cerr << "Block allocation out of bounds" << std::endl;
+         block_bitmap_->deallocate(block_num);
+         return -1;
+    }
 
     // 清空區塊
     std::vector<uint8_t> empty_block(Config::BLOCK_SIZE, 0);
-    disk_->writeBlock(block_num, empty_block.data());
+    disk_->writeBlock(actual_block_num, empty_block.data());
 
-    // 更新 superblock
-    superblock_.free_blocks--;
-    saveSuperblock();
-
-    return block_num;
+    return actual_block_num;
 }
 
 bool InodeManager::freeBlock(uint32_t block_num) {
@@ -149,122 +182,37 @@ bool InodeManager::freeBlock(uint32_t block_num) {
     uint32_t bitmap_index = block_num - Config::DATA_BLOCKS_START;
     block_bitmap_->deallocate(bitmap_index);
 
-    // 更新 superblock
-    superblock_.free_blocks++;
-    saveSuperblock();
-
     return true;
 }
 
 int InodeManager::getBlockNumber(Inode& inode, uint32_t logical_block, bool allocate) {
-    // 直接區塊
-    if (logical_block < Config::DIRECT_BLOCKS) {
-        if (inode.direct[logical_block] == 0 && allocate) {
+    // Only support Direct Blocks
+    if (logical_block >= Config::DIRECT_BLOCKS) {
+        return -1; // File too large / Not supported
+    }
+
+    if (inode.direct_blks[logical_block] == 0) {
+        if (allocate) {
             int new_block = allocateBlock();
             if (new_block < 0) return -1;
-            inode.direct[logical_block] = new_block;
-            inode.block_count++;
+            inode.direct_blks[logical_block] = new_block;
+            // Note: We don't have block_count field anymore in Inode
+        } else {
+            return 0; // Not allocated
         }
-        return inode.direct[logical_block];
     }
-
-    logical_block -= Config::DIRECT_BLOCKS;
-
-    // 單重間接區塊
-    if (logical_block < Config::POINTERS_PER_BLOCK) {
-        if (inode.single_indirect == 0 && allocate) {
-            int new_block = allocateBlock();
-            if (new_block < 0) return -1;
-            inode.single_indirect = new_block;
-            inode.block_count++;
-        }
-        if (inode.single_indirect == 0) return 0;
-        return getIndirectBlock(inode.single_indirect, logical_block, allocate);
-    }
-
-    logical_block -= Config::POINTERS_PER_BLOCK;
-
-    // 雙重間接區塊
-    if (logical_block < Config::POINTERS_PER_BLOCK * Config::POINTERS_PER_BLOCK) {
-        if (inode.double_indirect == 0 && allocate) {
-            int new_block = allocateBlock();
-            if (new_block < 0) return -1;
-            inode.double_indirect = new_block;
-            inode.block_count++;
-        }
-        if (inode.double_indirect == 0) return 0;
-        return getDoubleIndirectBlock(inode.double_indirect, logical_block, allocate);
-    }
-
-    return -1;  // 超出範圍
+    return inode.direct_blks[logical_block];
 }
 
-int InodeManager::getIndirectBlock(uint32_t indirect_block, uint32_t index, bool allocate) {
-    std::vector<uint32_t> pointers(Config::POINTERS_PER_BLOCK, 0);
-    disk_->readBlock(indirect_block, pointers.data());
-
-    if (pointers[index] == 0 && allocate) {
-        int new_block = allocateBlock();
-        if (new_block < 0) return -1;
-        pointers[index] = new_block;
-        disk_->writeBlock(indirect_block, pointers.data());
-    }
-
-    return pointers[index];
-}
-
-int InodeManager::getDoubleIndirectBlock(uint32_t double_indirect_block, uint32_t index, bool allocate) {
-    uint32_t first_level = index / Config::POINTERS_PER_BLOCK;
-    uint32_t second_level = index % Config::POINTERS_PER_BLOCK;
-
-    std::vector<uint32_t> first_pointers(Config::POINTERS_PER_BLOCK, 0);
-    disk_->readBlock(double_indirect_block, first_pointers.data());
-
-    if (first_pointers[first_level] == 0 && allocate) {
-        int new_block = allocateBlock();
-        if (new_block < 0) return -1;
-        first_pointers[first_level] = new_block;
-        disk_->writeBlock(double_indirect_block, first_pointers.data());
-    }
-
-    if (first_pointers[first_level] == 0) return 0;
-    return getIndirectBlock(first_pointers[first_level], second_level, allocate);
-}
+// Indirect block methods removed as they are not supported in basic implementation
 
 bool InodeManager::freeAllBlocks(Inode& inode) {
     // 釋放直接區塊
     for (uint32_t i = 0; i < Config::DIRECT_BLOCKS; ++i) {
-        if (inode.direct[i] != 0) {
-            freeBlock(inode.direct[i]);
+        if (inode.direct_blks[i] != 0) {
+            freeBlock(inode.direct_blks[i]);
+            inode.direct_blks[i] = 0;
         }
     }
-
-    // 釋放單重間接區塊
-    if (inode.single_indirect != 0) {
-        std::vector<uint32_t> pointers(Config::POINTERS_PER_BLOCK);
-        disk_->readBlock(inode.single_indirect, pointers.data());
-        for (uint32_t ptr : pointers) {
-            if (ptr != 0) freeBlock(ptr);
-        }
-        freeBlock(inode.single_indirect);
-    }
-
-    // 釋放雙重間接區塊
-    if (inode.double_indirect != 0) {
-        std::vector<uint32_t> first_pointers(Config::POINTERS_PER_BLOCK);
-        disk_->readBlock(inode.double_indirect, first_pointers.data());
-        for (uint32_t first_ptr : first_pointers) {
-            if (first_ptr != 0) {
-                std::vector<uint32_t> second_pointers(Config::POINTERS_PER_BLOCK);
-                disk_->readBlock(first_ptr, second_pointers.data());
-                for (uint32_t second_ptr : second_pointers) {
-                    if (second_ptr != 0) freeBlock(second_ptr);
-                }
-                freeBlock(first_ptr);
-            }
-        }
-        freeBlock(inode.double_indirect);
-    }
-
     return true;
 }

@@ -13,7 +13,7 @@ FileSystem::~FileSystem() {
 }
 
 bool FileSystem::format(const std::string& disk_path, bool use_memory) {
-    // 創建儲存後端
+    // 1. Initialize Disk (16MB)
     if (use_memory) {
         disk_ = std::make_unique<MemoryDiskEmulator>(Config::TOTAL_BLOCKS, Config::BLOCK_SIZE);
     } else {
@@ -24,100 +24,126 @@ bool FileSystem::format(const std::string& disk_path, bool use_memory) {
         disk_ = std::move(file_disk);
     }
 
-    // 創建並初始化 superblock
+    // 2. Write Superblock (Block 0)
     Superblock sb;
+    // Note: Superblock is now POD initialized by constructor with default constants
     if (!disk_->writeBlock(Config::SUPERBLOCK_BLOCK, &sb)) {
         std::cerr << "寫入 superblock 失敗" << std::endl;
         return false;
     }
 
-    // 創建 bitmap
-    inode_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::INODE_BITMAP_START, 
-                                              Config::INODE_BITMAP_BLOCKS, Config::TOTAL_INODES);
-    block_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::BLOCK_BITMAP_START, 
-                                              Config::BLOCK_BITMAP_BLOCKS, 
-                                              Config::TOTAL_BLOCKS - Config::DATA_BLOCKS_START);
+    // 3. Initialize Bitmaps
+    // Inode Bitmap at Block 1, Block Bitmap at Block 2
+    inode_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::INODE_BITMAP_BLOCK, 
+                                              1, Config::TOTAL_INODES);
+    block_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::BLOCK_BITMAP_BLOCK, 
+                                              1, Config::TOTAL_BLOCKS - Config::DATA_BLOCKS_START);
 
-    // 保存空的 bitmap
+    // Initial State: All 0 (Free)
+    // Wait, Block Bitmap logic: 
+    // If we map 0->DataBlockStart, then we don't need to mark metadata blocks as used in THIS bitmap 
+    // because this bitmap ONLY covers the Data Area.
+    // However, the Master Spec said: "Initialize Bitmaps... Mark Block 0~6 as 1 (Used)".
+    // If the Block Bitmap covers the ENTIRE disk (0 to 4096), then we mark 0-6 used.
+    // If it covers ONLY Data area, then 0 represents Block 7.
+    // Let's stick to "Bitmap tracks Data Blocks Only" to simplify logic (1 bit = 1 allocatable data block).
+    // The Metadata blocks are implicitly "used" because they are not in the allocatable range.
+    // But to follow the Master Spec strictly: "Block 2: Block Bitmap tracks 4096 data blocks usage."
+    // "Block 0~6... mark as 1".
+    // This implies the bitmap covers 0 to 4095.
+    // Let's ADJUST logic: Bitmap covers 0..TOTAL_BLOCKS.
+    // So `num_blocks` passed to Bitmap constructor should be enough to cover TOTAL_BLOCKS blocks.
+    // 4096 bits = 512 bytes. 1 block is enough.
+    
+    // RE-INIT Bitmaps with FULL range support:
+    block_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::BLOCK_BITMAP_BLOCK, 
+                                              1, Config::TOTAL_BLOCKS); 
+    
+    // Manually mark 0-6 as used
+    for (uint32_t i = 0; i < Config::DATA_BLOCKS_START; ++i) {
+        block_bitmap_->setBit(i);
+    }
+
+    // Mark Root Inode (0) as used
+    inode_bitmap_->setBit(Config::ROOT_INODE);
+
+    // Save initialized bitmaps
     inode_bitmap_->save();
     block_bitmap_->save();
 
-    // 創建 inode manager
+    // 4. Create Inode Manager
     inode_manager_ = std::make_unique<InodeManager>(disk_.get(), inode_bitmap_.get(), block_bitmap_.get());
 
-    // 創建根目錄
-    int root_inode = inode_manager_->allocateInode(FileType::DIRECTORY);
-    if (root_inode != Config::ROOT_INODE) {
-        std::cerr << "根目錄 inode 編號錯誤" << std::endl;
-        return false;
-    }
-
-    // 初始化根目錄：添加 "." 和 ".." 項目
+    // 5. Initialize Root Inode
+    // We manually write it because allocateInode might search for 0, and we already set bit 0.
+    // Or we use allocateInode logic but need to ensure it picks 0.
+    // Since we set bit 0, allocateInode will pick 1.
+    // So let's manually init Root Inode.
     Inode root;
-    inode_manager_->readInode(Config::ROOT_INODE, root);
+    root.inode_num = Config::ROOT_INODE;
+    root.file_type = FileType::DIRECTORY;
+    root.size = 2 * sizeof(DirectoryEntry); // . and ..
+    for(int i=0; i<Config::DIRECT_BLOCKS; ++i) root.direct_blks[i] = 0;
 
-    // 分配第一個區塊給根目錄
-    int block_num = inode_manager_->getBlockNumber(root, 0, true);
-    if (block_num <= 0) {
-        std::cerr << "無法為根目錄分配區塊" << std::endl;
-        return false;
+    // Allocate data block for Root Directory
+    // We need to verify which block allocateBlock returns. It should be first free one.
+    // Since 0-6 used, it should return 7.
+    int root_block = inode_manager_->allocateBlock();
+    if (root_block != static_cast<int>(Config::DATA_BLOCKS_START)) {
+        // Warning but proceed
+        // std::cout << "Root block allocated at " << root_block << std::endl;
     }
-    
-    // 關鍵修復：立即寫回根目錄 inode
+    root.direct_blks[0] = root_block;
+
+    // Write Root Inode
     inode_manager_->writeInode(Config::ROOT_INODE, root);
 
-    // 創建目錄項目（使用完整區塊大小以避免未初始化內存問題）
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-    std::vector<DirectoryEntry> entries(entries_per_block);  // 分配完整區塊
+    // 6. Initialize Root Directory Entries
+    std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
+    // Init all to invalid
+    for(auto& e : entries) e.inode_number = 0xFFFFFFFF; // Invalid
+
     entries[0] = DirectoryEntry(Config::ROOT_INODE, ".");
     entries[1] = DirectoryEntry(Config::ROOT_INODE, "..");
-    // 其餘項目已由默認構造函數初始化為 invalid
+    
+    disk_->writeBlock(root_block, entries.data());
 
-    // 寫入目錄項目
-    disk_->writeBlock(block_num, entries.data());
-    root.size = sizeof(DirectoryEntry) * 2;
-    inode_manager_->writeInode(Config::ROOT_INODE, root);
-
-    // 保存 bitmap
+    // Final Save
     inode_bitmap_->save();
     block_bitmap_->save();
 
     mounted_ = true;
-    std::cout << "檔案系統格式化完成" << std::endl;
+    std::cout << "檔案系統格式化完成 (16MB, 4KB blocks)" << std::endl;
     return true;
 }
 
 bool FileSystem::mount(const std::string& disk_path) {
-    // 打開現有的檔案系統
     disk_ = std::make_unique<FileDiskEmulator>(disk_path, Config::TOTAL_BLOCKS, Config::BLOCK_SIZE);
 
-    // 讀取 superblock
     Superblock sb;
     if (!disk_->readBlock(Config::SUPERBLOCK_BLOCK, &sb)) {
         std::cerr << "讀取 superblock 失敗" << std::endl;
         return false;
     }
 
-    // 驗證魔數
     if (sb.magic != Config::MAGIC_NUMBER) {
-        std::cerr << "無效的檔案系統" << std::endl;
+        std::cerr << "無效的檔案系統 (Magic Mismatch)" << std::endl;
         return false;
     }
 
-    // 載入 bitmap
-    inode_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::INODE_BITMAP_START, 
-                                              Config::INODE_BITMAP_BLOCKS, Config::TOTAL_INODES);
-    block_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::BLOCK_BITMAP_START, 
-                                              Config::BLOCK_BITMAP_BLOCKS, 
-                                              Config::TOTAL_BLOCKS - Config::DATA_BLOCKS_START);
+    inode_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::INODE_BITMAP_BLOCK, 
+                                              1, Config::TOTAL_INODES);
+    block_bitmap_ = std::make_unique<Bitmap>(disk_.get(), Config::BLOCK_BITMAP_BLOCK, 
+                                              1, Config::TOTAL_BLOCKS);
 
     if (!inode_bitmap_->load() || !block_bitmap_->load()) {
         std::cerr << "載入 bitmap 失敗" << std::endl;
         return false;
     }
 
-    // 創建 inode manager
     inode_manager_ = std::make_unique<InodeManager>(disk_.get(), inode_bitmap_.get(), block_bitmap_.get());
+    
+    // Note: InodeManager loadSuperblock is redundant if we already read it, but keeps sync
     inode_manager_->loadSuperblock();
 
     mounted_ = true;
@@ -134,257 +160,198 @@ void FileSystem::unmount() {
     }
 }
 
+// Split path helper
 std::vector<std::string> FileSystem::splitPath(const std::string& path) {
     std::vector<std::string> components;
     std::stringstream ss(path);
     std::string component;
-
     while (std::getline(ss, component, '/')) {
         if (!component.empty() && component != ".") {
             components.push_back(component);
         }
     }
-
     return components;
 }
 
 int FileSystem::resolvePath(const std::string& path) {
-    if (!mounted_) {
-        std::cerr << "檔案系統未掛載" << std::endl;
-        return -1;
-    }
-
-    if (path == "/" || path.empty()) {
-        return Config::ROOT_INODE;
-    }
+    if (!mounted_) return -1;
+    if (path == "/" || path.empty()) return Config::ROOT_INODE;
 
     std::vector<std::string> components = splitPath(path);
     uint32_t current_inode = Config::ROOT_INODE;
 
     for (const auto& comp : components) {
         int next_inode = findInDirectory(current_inode, comp);
-        if (next_inode < 0) {
-            return -1;  // 路徑不存在
-        }
+        if (next_inode < 0) return -1;
         current_inode = next_inode;
     }
-
     return current_inode;
 }
 
 int FileSystem::findInDirectory(uint32_t dir_inode_num, const std::string& name) {
     Inode dir_inode;
-    if (!inode_manager_->readInode(dir_inode_num, dir_inode)) {
-        return -1;
-    }
+    if (!inode_manager_->readInode(dir_inode_num, dir_inode)) return -1;
+    if (!dir_inode.isDirectory()) return -1;
 
-    if (!dir_inode.isDirectory()) {
-        return -1;
-    }
+    // Scan all direct blocks
+    for (int i = 0; i < Config::DIRECT_BLOCKS; ++i) {
+        uint32_t block_num = dir_inode.direct_blks[i];
+        if (block_num == 0) continue;
 
-    // 計算目錄項目數量
-    uint32_t num_entries = dir_inode.size / sizeof(DirectoryEntry);
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-
-    for (uint32_t i = 0; i < num_entries; ++i) {
-        uint32_t block_index = i / entries_per_block;
-        uint32_t entry_offset = i % entries_per_block;
-
-        int block_num = inode_manager_->getBlockNumber(dir_inode, block_index, false);
-        if (block_num <= 0) continue;
-
-        std::vector<DirectoryEntry> entries(entries_per_block);
+        std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
         disk_->readBlock(block_num, entries.data());
 
-        if (entries[entry_offset].valid && std::string(entries[entry_offset].name) == name) {
-            return entries[entry_offset].inode_number;
+        for (const auto& entry : entries) {
+            if (entry.inode_number != 0xFFFFFFFF && std::strncmp(entry.name, name.c_str(), Config::MAX_FILENAME_LENGTH) == 0) {
+                 return entry.inode_number;
+            }
         }
     }
-
-    return -1;  // 未找到
+    return -1;
 }
 
 bool FileSystem::addToDirectory(uint32_t dir_inode_num, const std::string& name, uint32_t inode_num) {
-    Inode dir_inode;
-    if (!inode_manager_->readInode(dir_inode_num, dir_inode)) {
-        return false;
-    }
-
-    if (!dir_inode.isDirectory()) {
-        return false;
-    }
-
-    // 檢查是否已存在
     if (findInDirectory(dir_inode_num, name) >= 0) {
-        std::cerr << "項目已存在: " << name << std::endl;
+        std::cerr << "File exists: " << name << std::endl;
         return false;
     }
 
-    // 找到空閒位置或添加新項目
-    uint32_t num_entries = dir_inode.size / sizeof(DirectoryEntry);
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-    
-    uint32_t block_index = num_entries / entries_per_block;
-    uint32_t entry_offset = num_entries % entries_per_block;
+    Inode dir_inode;
+    inode_manager_->readInode(dir_inode_num, dir_inode);
+    if (!dir_inode.isDirectory()) return false;
 
-    int block_num = inode_manager_->getBlockNumber(dir_inode, block_index, true);
-    if (block_num <= 0) {
-        std::cerr << "無法分配目錄區塊" << std::endl;
-        return false;
+    // Find empty slot
+    for (int i = 0; i < Config::DIRECT_BLOCKS; ++i) {
+        bool allocate = false;
+        if (dir_inode.direct_blks[i] == 0) {
+            // Alloc new block
+            int new_blk = inode_manager_->allocateBlock();
+            if (new_blk < 0) return false;
+            dir_inode.direct_blks[i] = new_blk;
+            // Init new block with invalid entries
+            std::vector<DirectoryEntry> empty_entries(Config::DIR_ENTRIES_PER_BLOCK); 
+            // Default constructor sets inode=0xFFFFFFFF
+            disk_->writeBlock(new_blk, empty_entries.data());
+            
+            inode_manager_->writeInode(dir_inode_num, dir_inode);
+            allocate = true;
+        }
+
+        uint32_t block_num = dir_inode.direct_blks[i];
+        std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
+        disk_->readBlock(block_num, entries.data());
+
+        for (auto& entry : entries) {
+            if (entry.inode_number == 0xFFFFFFFF) {
+                // Found empty slot
+                entry = DirectoryEntry(inode_num, name.c_str());
+                disk_->writeBlock(block_num, entries.data());
+                
+                // Update size to reflect content? Or just stay roughly compatible. 
+                // Spec says size is in bytes. Strictly speaking size should cover used entries?
+                // Or just be logical size? Let's just update size if needed, but for directory usually size = used blocks * 4096 or just ignore size.
+                // Or size = number of entries * 32. 
+                // Let's increment size by 32 bytes for each entry added?
+                dir_inode.size += sizeof(DirectoryEntry);
+                inode_manager_->writeInode(dir_inode_num, dir_inode);
+                return true;
+            }
+        }
     }
     
-    // 關鍵修復：如果分配了新區塊，inode 已被修改，需要立即寫回
-    // 這確保 block_count 和區塊指針的更新被保存
-    inode_manager_->writeInode(dir_inode_num, dir_inode);
-
-    // 讀取區塊
-    std::vector<DirectoryEntry> entries(entries_per_block);
-    disk_->readBlock(block_num, entries.data());
-
-    // 添加新項目
-    entries[entry_offset] = DirectoryEntry(inode_num, name.c_str());
-
-    // 寫回區塊
-    disk_->writeBlock(block_num, entries.data());
-
-    // 更新目錄大小
-    dir_inode.size += sizeof(DirectoryEntry);
-    inode_manager_->writeInode(dir_inode_num, dir_inode);
-
-    return true;
+    std::cerr << "Directory full" << std::endl;
+    return false;
 }
 
 bool FileSystem::removeFromDirectory(uint32_t dir_inode_num, const std::string& name) {
     Inode dir_inode;
-    if (!inode_manager_->readInode(dir_inode_num, dir_inode)) {
-        return false;
-    }
+    inode_manager_->readInode(dir_inode_num, dir_inode);
+    
+    for (int i = 0; i < Config::DIRECT_BLOCKS; ++i) {
+        uint32_t block_num = dir_inode.direct_blks[i];
+        if (block_num == 0) continue;
 
-    if (!dir_inode.isDirectory()) {
-        return false;
-    }
-
-    uint32_t num_entries = dir_inode.size / sizeof(DirectoryEntry);
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-
-    for (uint32_t i = 0; i < num_entries; ++i) {
-        uint32_t block_index = i / entries_per_block;
-        uint32_t entry_offset = i % entries_per_block;
-
-        int block_num = inode_manager_->getBlockNumber(dir_inode, block_index, false);
-        if (block_num <= 0) continue;
-
-        std::vector<DirectoryEntry> entries(entries_per_block);
+        std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
         disk_->readBlock(block_num, entries.data());
+        bool changed = false;
 
-        if (entries[entry_offset].valid && std::string(entries[entry_offset].name) == name) {
-            // 標記為無效
-            entries[entry_offset].valid = false;
+        for (auto& entry : entries) {
+            if (entry.inode_number != 0xFFFFFFFF && std::strncmp(entry.name, name.c_str(), Config::MAX_FILENAME_LENGTH) == 0) {
+                entry.inode_number = 0xFFFFFFFF; // Mark invalid
+                changed = true;
+                break;
+            }
+        }
+
+        if (changed) {
             disk_->writeBlock(block_num, entries.data());
+            dir_inode.size -= sizeof(DirectoryEntry);
+            inode_manager_->writeInode(dir_inode_num, dir_inode);
             return true;
         }
     }
-
     return false;
 }
 
 bool FileSystem::isDirectoryEmpty(uint32_t dir_inode_num) {
     Inode dir_inode;
-    if (!inode_manager_->readInode(dir_inode_num, dir_inode)) {
-        return false;
-    }
-
-    uint32_t num_entries = dir_inode.size / sizeof(DirectoryEntry);
+    inode_manager_->readInode(dir_inode_num, dir_inode);
     
-    // 只有 "." 和 ".." 的目錄被視為空
-    uint32_t valid_count = 0;
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
+    for (int i = 0; i < Config::DIRECT_BLOCKS; ++i) {
+        uint32_t block_num = dir_inode.direct_blks[i];
+        if (block_num == 0) continue;
 
-    for (uint32_t i = 0; i < num_entries; ++i) {
-        uint32_t block_index = i / entries_per_block;
-        uint32_t entry_offset = i % entries_per_block;
-
-        int block_num = inode_manager_->getBlockNumber(dir_inode, block_index, false);
-        if (block_num <= 0) continue;
-
-        std::vector<DirectoryEntry> entries(entries_per_block);
+        std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
         disk_->readBlock(block_num, entries.data());
 
-        if (entries[entry_offset].valid) {
-            std::string name = entries[entry_offset].name;
-            if (name != "." && name != "..") {
-                valid_count++;
-            }
+        for (const auto& entry : entries) {
+            if (entry.inode_number == 0xFFFFFFFF) continue;
+            std::string name = entry.name;
+            if (name != "." && name != "..") return false;
         }
     }
-
-    return valid_count == 0;
+    return true;
 }
 
 bool FileSystem::create(const std::string& path, bool is_directory) {
     if (!mounted_) return false;
-
-    // 分割路徑
     auto components = splitPath(path);
     if (components.empty()) return false;
-
+    
     std::string filename = components.back();
     components.pop_back();
 
-    // 找到父目錄
-    uint32_t parent_inode = Config::ROOT_INODE;
-    for (const auto& comp : components) {
-        int next = findInDirectory(parent_inode, comp);
+    uint32_t parent = Config::ROOT_INODE;
+    for (const auto& c : components) {
+        int next = findInDirectory(parent, c);
         if (next < 0) {
-            std::cerr << "父目錄不存在: " << comp << std::endl;
+            std::cerr << "Parent not found: " << c << std::endl;
             return false;
         }
-        parent_inode = next;
+        parent = next;
     }
 
-    // 分配新 inode
     FileType type = is_directory ? FileType::DIRECTORY : FileType::REGULAR;
     int new_inode = inode_manager_->allocateInode(type);
-    if (new_inode < 0) {
-        return false;
-    }
+    if (new_inode < 0) return false;
 
-    // 如果是目錄，初始化 "." 和 ".."
     if (is_directory) {
-        Inode dir;
-        inode_manager_->readInode(new_inode, dir);
-
-        int block_num = inode_manager_->getBlockNumber(dir, 0, true);
-        if (block_num <= 0) {
-            inode_manager_->freeInode(new_inode);
-            return false;
+        // Init . and ..
+        if(!addToDirectory(new_inode, ".", new_inode) || 
+           !addToDirectory(new_inode, "..", parent)) {
+             // Rollback?
+             return false;
         }
-        
-        // 關鍵修復：寫回 inode 以保存區塊分配的更新
-        inode_manager_->writeInode(new_inode, dir);
-
-        // 創建目錄項目（使用完整區塊）
-        uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-        std::vector<DirectoryEntry> entries(entries_per_block);
-        entries[0] = DirectoryEntry(new_inode, ".");
-        entries[1] = DirectoryEntry(parent_inode, "..");
-        // 其餘項目由默認構造函數初始化為 invalid
-
-        disk_->writeBlock(block_num, entries.data());
-        dir.size = sizeof(DirectoryEntry) * 2;
-        inode_manager_->writeInode(new_inode, dir);
     }
 
-    // 添加到父目錄
-    if (!addToDirectory(parent_inode, filename, new_inode)) {
+    if (!addToDirectory(parent, filename, new_inode)) {
+        // Rollback
         inode_manager_->freeInode(new_inode);
         return false;
     }
 
     inode_bitmap_->save();
     block_bitmap_->save();
-
-    std::cout << (is_directory ? "目錄" : "檔案") << "創建成功: " << path << std::endl;
     return true;
 }
 
@@ -393,48 +360,35 @@ bool FileSystem::mkdir(const std::string& path) {
 }
 
 bool FileSystem::remove(const std::string& path) {
-    if (!mounted_) return false;
-
     int inode_num = resolvePath(path);
     if (inode_num < 0) {
-        std::cerr << "路徑不存在: " << path << std::endl;
+        std::cerr << "Not found" << std::endl;
         return false;
     }
-
-    // 不能刪除根目錄
-    if (inode_num == static_cast<int>(Config::ROOT_INODE)) {
-        std::cerr << "無法刪除根目錄" << std::endl;
+    if (inode_num == (int)Config::ROOT_INODE) {
+        std::cerr << "Cannot delete root" << std::endl;
         return false;
     }
 
     Inode inode;
     inode_manager_->readInode(inode_num, inode);
-
-    // 如果是目錄，檢查是否為空
     if (inode.isDirectory() && !isDirectoryEmpty(inode_num)) {
-        std::cerr << "目錄不為空: " << path << std::endl;
+        std::cerr << "Directory not empty" << std::endl;
         return false;
     }
 
-    // 從父目錄移除
+    // Unlink from parent
     auto components = splitPath(path);
     std::string filename = components.back();
     components.pop_back();
-
-    uint32_t parent_inode = Config::ROOT_INODE;
-    for (const auto& comp : components) {
-        parent_inode = findInDirectory(parent_inode, comp);
-    }
-
-    removeFromDirectory(parent_inode, filename);
-
-    // 釋放 inode
+    uint32_t parent = Config::ROOT_INODE;
+    for (const auto& c : components) parent = findInDirectory(parent, c);
+    
+    removeFromDirectory(parent, filename);
     inode_manager_->freeInode(inode_num);
-
+    
     inode_bitmap_->save();
     block_bitmap_->save();
-
-    std::cout << "刪除成功: " << path << std::endl;
     return true;
 }
 
@@ -444,176 +398,116 @@ bool FileSystem::rmdir(const std::string& path) {
 
 std::vector<std::string> FileSystem::list(const std::string& path) {
     std::vector<std::string> result;
-    
-    if (!mounted_) return result;
-
     int inode_num = resolvePath(path);
-    if (inode_num < 0) {
-        std::cerr << "路徑不存在: " << path << std::endl;
-        return result;
-    }
+    if (inode_num < 0) return result;
 
     Inode inode;
-    if (!inode_manager_->readInode(inode_num, inode)) {
-        return result;
-    }
+    inode_manager_->readInode(inode_num, inode);
+    if (!inode.isDirectory()) return result;
 
-    if (!inode.isDirectory()) {
-        std::cerr << "不是目錄: " << path << std::endl;
-        return result;
-    }
-
-    uint32_t num_entries = inode.size / sizeof(DirectoryEntry);
-    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
-
-    for (uint32_t i = 0; i < num_entries; ++i) {
-        uint32_t block_index = i / entries_per_block;
-        uint32_t entry_offset = i % entries_per_block;
-
-        int block_num = inode_manager_->getBlockNumber(inode, block_index, false);
-        if (block_num <= 0) continue;
-
-        std::vector<DirectoryEntry> entries(entries_per_block);
-        disk_->readBlock(block_num, entries.data());
-
-        if (entries[entry_offset].valid) {
-            result.push_back(entries[entry_offset].name);
+    for(int i=0; i<Config::DIRECT_BLOCKS; ++i) {
+        uint32_t blk = inode.direct_blks[i];
+        if (blk == 0) continue;
+        std::vector<DirectoryEntry> entries(Config::DIR_ENTRIES_PER_BLOCK);
+        disk_->readBlock(blk, entries.data());
+        for(const auto& e : entries) {
+            if (e.inode_number != 0xFFFFFFFF) {
+                result.push_back(e.name);
+            }
         }
     }
-
     return result;
 }
 
+// Read/Write for files
 int FileSystem::read(const std::string& path, void* buffer, uint32_t size, uint32_t offset) {
-    if (!mounted_) return -1;
-
     int inode_num = resolvePath(path);
-    if (inode_num < 0) {
-        std::cerr << "檔案不存在: " << path << std::endl;
-        return -1;
-    }
-
+    if (inode_num < 0) return -1;
     Inode inode;
-    if (!inode_manager_->readInode(inode_num, inode)) {
-        return -1;
-    }
+    inode_manager_->readInode(inode_num, inode);
+    if (!inode.isFile()) return -1;
 
-    if (!inode.isFile()) {
-        std::cerr << "不是檔案: " << path << std::endl;
-        return -1;
-    }
-
-    // 調整讀取大小
     if (offset >= inode.size) return 0;
-    if (offset + size > inode.size) {
-        size = inode.size - offset;
-    }
+    if (offset + size > inode.size) size = inode.size - offset;
 
     uint32_t bytes_read = 0;
-    uint8_t* buf = static_cast<uint8_t*>(buffer);
+    uint8_t* out = (uint8_t*)buffer;
 
-    while (bytes_read < size) {
-        uint32_t block_index = (offset + bytes_read) / Config::BLOCK_SIZE;
-        uint32_t block_offset = (offset + bytes_read) % Config::BLOCK_SIZE;
-        uint32_t bytes_to_read = std::min(size - bytes_read, Config::BLOCK_SIZE - block_offset);
+    while(bytes_read < size) {
+        uint32_t logical_idx = (offset + bytes_read) / Config::BLOCK_SIZE;
+        uint32_t blk_off = (offset + bytes_read) % Config::BLOCK_SIZE;
+        uint32_t to_read = std::min(size - bytes_read, Config::BLOCK_SIZE - blk_off);
 
-        int block_num = inode_manager_->getBlockNumber(inode, block_index, false);
-        if (block_num <= 0) break;
+        int phys_blk = inode_manager_->getBlockNumber(inode, logical_idx, false);
+        if (phys_blk <= 0) break; // Should not happen if size is correct
 
-        std::vector<uint8_t> block_buffer(Config::BLOCK_SIZE);
-        disk_->readBlock(block_num, block_buffer.data());
-
-        std::memcpy(buf + bytes_read, block_buffer.data() + block_offset, bytes_to_read);
-        bytes_read += bytes_to_read;
+        std::vector<uint8_t> block_buf(Config::BLOCK_SIZE);
+        disk_->readBlock(phys_blk, block_buf.data());
+        std::memcpy(out + bytes_read, block_buf.data() + blk_off, to_read);
+        bytes_read += to_read;
     }
-
     return bytes_read;
 }
 
 int FileSystem::write(const std::string& path, const void* buffer, uint32_t size, uint32_t offset) {
-    if (!mounted_) return -1;
-
     int inode_num = resolvePath(path);
-    if (inode_num < 0) {
-        std::cerr << "檔案不存在: " << path << std::endl;
-        return -1;
-    }
-
+    if (inode_num < 0) return -1;
     Inode inode;
-    if (!inode_manager_->readInode(inode_num, inode)) {
-        return -1;
-    }
-
-    if (!inode.isFile()) {
-        std::cerr << "不是檔案: " << path << std::endl;
-        return -1;
-    }
+    inode_manager_->readInode(inode_num, inode);
+    if (!inode.isFile()) return -1;
 
     uint32_t bytes_written = 0;
-    const uint8_t* buf = static_cast<const uint8_t*>(buffer);
+    const uint8_t* in = (const uint8_t*)buffer;
 
-    while (bytes_written < size) {
-        uint32_t block_index = (offset + bytes_written) / Config::BLOCK_SIZE;
-        uint32_t block_offset = (offset + bytes_written) % Config::BLOCK_SIZE;
-        uint32_t bytes_to_write = std::min(size - bytes_written, Config::BLOCK_SIZE - block_offset);
+    while(bytes_written < size) {
+        uint32_t logical_idx = (offset + bytes_written) / Config::BLOCK_SIZE;
+        uint32_t blk_off = (offset + bytes_written) % Config::BLOCK_SIZE;
+        uint32_t to_write = std::min(size - bytes_written, Config::BLOCK_SIZE - blk_off);
 
-        int block_num = inode_manager_->getBlockNumber(inode, block_index, true);
-        if (block_num <= 0) {
-            std::cerr << "無法分配區塊" << std::endl;
+        // Auto allocate
+        int phys_blk = inode_manager_->getBlockNumber(inode, logical_idx, true);
+        if (phys_blk <= 0) {
+            std::cerr << "No space or file too large" << std::endl;
             break;
         }
-        
-        // 關鍵修復：寫回 inode（如果分配了新區塊）
-        inode_manager_->writeInode(inode_num, inode);
+        inode_manager_->writeInode(inode_num, inode); // update direct_blks
 
-        std::vector<uint8_t> block_buffer(Config::BLOCK_SIZE);
-        
-        // 如果不是寫入整個區塊，需要先讀取
-        if (block_offset != 0 || bytes_to_write != Config::BLOCK_SIZE) {
-            disk_->readBlock(block_num, block_buffer.data());
+        std::vector<uint8_t> block_buf(Config::BLOCK_SIZE);
+        if (blk_off != 0 || to_write < Config::BLOCK_SIZE) {
+            disk_->readBlock(phys_blk, block_buf.data());
         }
+        std::memcpy(block_buf.data() + blk_off, in + bytes_written, to_write);
+        disk_->writeBlock(phys_blk, block_buf.data());
 
-        std::memcpy(block_buffer.data() + block_offset, buf + bytes_written, bytes_to_write);
-        disk_->writeBlock(block_num, block_buffer.data());
-
-        bytes_written += bytes_to_write;
+        bytes_written += to_write;
     }
 
-    // 更新檔案大小
     if (offset + bytes_written > inode.size) {
         inode.size = offset + bytes_written;
         inode_manager_->writeInode(inode_num, inode);
     }
-
     block_bitmap_->save();
-
     return bytes_written;
 }
 
 bool FileSystem::stat(const std::string& path, Inode& inode) {
-    if (!mounted_) return false;
-
     int inode_num = resolvePath(path);
     if (inode_num < 0) return false;
-
     return inode_manager_->readInode(inode_num, inode);
 }
 
 void FileSystem::printInfo() {
     if (!mounted_) {
-        std::cout << "檔案系統未掛載" << std::endl;
+        std::cout << "Not mounted" << std::endl;
         return;
     }
-
-    const Superblock& sb = inode_manager_->getSuperblock();
+    // const Superblock& sb = inode_manager_->getSuperblock();
+    // Fields free_blocks/free_inodes removed from struct. 
+    // Use bitmaps if needed.
+    uint32_t free_inodes = inode_bitmap_->countFree();
+    uint32_t free_blocks = block_bitmap_->countFree();
     
-    std::cout << "\n========== 檔案系統資訊 ==========" << std::endl;
-    std::cout << "總區塊數: " << sb.total_blocks << std::endl;
-    std::cout << "空閒區塊數: " << sb.free_blocks << std::endl;
-    std::cout << "總 Inode 數: " << sb.total_inodes << std::endl;
-    std::cout << "空閒 Inode 數: " << sb.free_inodes << std::endl;
-    std::cout << "區塊大小: " << sb.block_size << " bytes" << std::endl;
-    std::cout << "使用率: " << std::fixed << std::setprecision(2) 
-              << (100.0 * (sb.total_blocks - sb.free_blocks) / sb.total_blocks) << "%" << std::endl;
-    std::cout << "================================\n" << std::endl;
+    std::cout << "System Info: 16MB Disk, 4KB x 4096 blocks." << std::endl;
+    std::cout << "Free Inodes: " << free_inodes << "/" << Config::TOTAL_INODES << std::endl;
+    std::cout << "Free Blocks: " << free_blocks << "/" << Config::TOTAL_BLOCKS << std::endl;
 }

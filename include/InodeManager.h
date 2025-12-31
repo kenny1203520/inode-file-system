@@ -52,9 +52,7 @@ public:
     bool freeAllBlocks(Inode& inode);
 
 private:
-    // 處理間接區塊
-    int getIndirectBlock(uint32_t indirect_block, uint32_t index, bool allocate);
-    int getDoubleIndirectBlock(uint32_t double_indirect_block, uint32_t index, bool allocate);
+    // Indirect block support removed
 };
 
 #endif // INODE_MANAGER_H
