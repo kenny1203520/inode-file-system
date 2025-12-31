@@ -3,7 +3,7 @@ echo ==========================================
 echo       Building MiniFS Project
 echo ==========================================
 
-if not exist build mkdir build
+
 
 echo [1/3] Compiling Main Test (minifs.exe)...
 g++ -I./include src/main.cpp src/FileSystem.cpp src/InodeManager.cpp src/DiskEmulator.cpp src/Bitmap.cpp -o minifs.exe

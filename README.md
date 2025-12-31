@@ -96,8 +96,12 @@ Hello MiniFS!
 
 ```
 inode-file-system/
-├── build.bat           # 建置腳本
+├── build.bat           # 建置腳本 (一鍵編譯)
 ├── disk.img            # 虛擬磁碟映像檔 (程式執行後產生)
+├── include/            # 標頭檔
+│   ├── config.h        # 系統參數設定
+│   ├── structures.h    # 資料結構定義 (Superblock, Inode, Dentry)
+│   └── ...
 ├── src/                # 原始碼
 │   ├── main.cpp        # 自動化測試主程式
 │   ├── Shell.cpp       # 互動式 Shell 主程式
@@ -106,9 +110,5 @@ inode-file-system/
 │   ├── InodeManager.cpp# Inode 與區塊管理
 │   ├── DiskEmulator.cpp# 磁碟讀寫模擬
 │   └── Bitmap.cpp      # Bitmap 管理
-├── include/            # 標頭檔
-│   ├── config.h        # 系統參數設定
-│   ├── structures.h    # 資料結構定義 (Superblock, Inode, Dentry)
-│   └── ...
 └── README.md           # 說明文件
 ```
