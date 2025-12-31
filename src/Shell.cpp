@@ -62,8 +62,9 @@ int main() {
             break;
         } else if (cmd == "help") {
             std::cout << "Commands:\n"
+                      << "  [Mandatory Specs]\n"
                       << "  mkfs <disk>     Create/Format file system\n"
-                      << "  ls [path]       List directory\n"
+                      << "  ls <path>       List directory\n"
                       << "  mkdir <path>    Create directory\n"
                       << "  rmdir <path>    Remove empty directory\n"
                       << "  touch <path>    Create empty file\n"
@@ -71,6 +72,11 @@ int main() {
                       << "  cat <path>      Show file content\n"
                       << "  append <path> <text> Append text to file\n"
                       << "  stat <path>     Show inode info\n"
+                      << "\n  [Extensions]\n"
+                      << "  cd <path>       Change current directory\n"
+                      << "  write <path> <text> Overwrite text to file\n"
+                      << "  format          Alias for mkfs\n"
+                      << "  info            Show disk usage info\n"
                       << "  exit            Exit shell\n";
         } else if (cmd == "mkfs") {
             std::string diskName = "disk.img";
@@ -255,6 +261,44 @@ int main() {
             } else {
                 std::cout << "Not found" << std::endl;
             }
+        } else if (cmd == "format") {
+            // Alias for mkfs
+            std::string diskName = "disk.img";
+            if(fs.format(diskName, false)) {
+                 std::cout << "FileSystem initialized on " << diskName << std::endl;
+                 current_path = "/";
+            }
+        } else if (cmd == "info") {
+            fs.printInfo();
+        } else if (cmd == "write") {
+             if (args.size() < 3) {
+                std::cout << "Usage: write <path> <content_string>" << std::endl;
+                continue;
+            }
+            std::string target = args[1];
+            if (target[0] != '/') target = (current_path == "/") ? "/" + target : current_path + "/" + target;
+            
+            std::string content;
+            std::string first_word = args[2];
+            if (first_word.front() == '"') {
+                for (size_t i=2; i<args.size(); ++i) {
+                    if (i > 2) content += " ";
+                    content += args[i];
+                }
+                if (content.size() >= 2 && content.front() == '"' && content.back() == '"') {
+                    content = content.substr(1, content.size() - 2);
+                }
+            } else {
+                content = first_word;
+            }
+
+            // Overwrite mode: create/truncate
+            fs.create(target, false); 
+            // write(path, buf, size, offset=0)
+            int w = fs.write(target, content.c_str(), content.size(), 0);
+            if (w >= 0) std::cout << "Written " << w << " bytes." << std::endl;
+            else std::cout << "Write failed." << std::endl;
+
         } else {
             std::cout << "Unknown command" << std::endl;
         }
