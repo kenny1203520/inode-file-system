@@ -62,11 +62,16 @@ bool FileSystem::format(const std::string& disk_path, bool use_memory) {
         std::cerr << "無法為根目錄分配區塊" << std::endl;
         return false;
     }
+    
+    // 關鍵修復：立即寫回根目錄 inode
+    inode_manager_->writeInode(Config::ROOT_INODE, root);
 
-    // 創建目錄項目
-    std::vector<DirectoryEntry> entries;
-    entries.push_back(DirectoryEntry(Config::ROOT_INODE, "."));
-    entries.push_back(DirectoryEntry(Config::ROOT_INODE, ".."));
+    // 創建目錄項目（使用完整區塊大小以避免未初始化內存問題）
+    uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
+    std::vector<DirectoryEntry> entries(entries_per_block);  // 分配完整區塊
+    entries[0] = DirectoryEntry(Config::ROOT_INODE, ".");
+    entries[1] = DirectoryEntry(Config::ROOT_INODE, "..");
+    // 其餘項目已由默認構造函數初始化為 invalid
 
     // 寫入目錄項目
     disk_->writeBlock(block_num, entries.data());
@@ -227,6 +232,10 @@ bool FileSystem::addToDirectory(uint32_t dir_inode_num, const std::string& name,
         std::cerr << "無法分配目錄區塊" << std::endl;
         return false;
     }
+    
+    // 關鍵修復：如果分配了新區塊，inode 已被修改，需要立即寫回
+    // 這確保 block_count 和區塊指針的更新被保存
+    inode_manager_->writeInode(dir_inode_num, dir_inode);
 
     // 讀取區塊
     std::vector<DirectoryEntry> entries(entries_per_block);
@@ -350,10 +359,16 @@ bool FileSystem::create(const std::string& path, bool is_directory) {
             inode_manager_->freeInode(new_inode);
             return false;
         }
+        
+        // 關鍵修復：寫回 inode 以保存區塊分配的更新
+        inode_manager_->writeInode(new_inode, dir);
 
-        std::vector<DirectoryEntry> entries;
-        entries.push_back(DirectoryEntry(new_inode, "."));
-        entries.push_back(DirectoryEntry(parent_inode, ".."));
+        // 創建目錄項目（使用完整區塊）
+        uint32_t entries_per_block = Config::BLOCK_SIZE / sizeof(DirectoryEntry);
+        std::vector<DirectoryEntry> entries(entries_per_block);
+        entries[0] = DirectoryEntry(new_inode, ".");
+        entries[1] = DirectoryEntry(parent_inode, "..");
+        // 其餘項目由默認構造函數初始化為 invalid
 
         disk_->writeBlock(block_num, entries.data());
         dir.size = sizeof(DirectoryEntry) * 2;
@@ -547,6 +562,9 @@ int FileSystem::write(const std::string& path, const void* buffer, uint32_t size
             std::cerr << "無法分配區塊" << std::endl;
             break;
         }
+        
+        // 關鍵修復：寫回 inode（如果分配了新區塊）
+        inode_manager_->writeInode(inode_num, inode);
 
         std::vector<uint8_t> block_buffer(Config::BLOCK_SIZE);
         

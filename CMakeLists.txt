@@ -29,11 +29,21 @@ set(HEADERS
 # 創建可執行檔
 add_executable(inode_fs_demo src/main.cpp ${SOURCES} ${HEADERS})
 
+# 創建簡化測試程式
+add_executable(test_simple src/test_simple.cpp ${SOURCES} ${HEADERS})
+
+# 創建極簡測試程式
+add_executable(test_minimal src/test_minimal.cpp ${SOURCES} ${HEADERS})
+
 # 如果需要，可以添加編譯選項
 if(MSVC)
     target_compile_options(inode_fs_demo PRIVATE /W4)
+    target_compile_options(test_simple PRIVATE /W4)
+    target_compile_options(test_minimal PRIVATE /W4)
 else()
     target_compile_options(inode_fs_demo PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(test_simple PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(test_minimal PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 # 輸出訊息
