@@ -40,25 +40,34 @@
 提供類似 Linux 的命令列環境，讓您手動操作檔案系統。
 *   **執行方法**: `.\shell.exe`
 *   **可用指令**:
+
+    **[規格書要求指令]**
+    *   `mkfs <disk>`: 建立新的檔案系統 (格式化)
     *   `ls [path]`: 列出目錄內容
-    *   `cd [path]`: 切換目錄
-    *   `mkdir [path]`: 創建目錄
-    *   `touch [path]`: 創建空檔案
-    *   `rm [path]`: 刪除檔案或目錄
+    *   `mkdir [path]`: 建立目錄
+    *   `rmdir [path]`: 刪除空目錄
+    *   `touch [path]`: 建立新檔案
+    *   `rm [path]`: 刪除檔案
     *   `cat [path]`: 顯示檔案內容
-    *   `write [path] [content]`: 寫入文字到檔案
-    *   `stat [path]`: 查看檔案/目錄詳細資訊 (Inode 資訊)
-    *   `format`: 重新格式化磁碟
-    *   `exit`: 離開程式
+    *   `append [path] "text"`: 將文字附加到檔尾
+    *   `stat [path]`: 顯示 Inode 資訊（大小、編號、區塊數）
+
+    **[額外擴充功能]**
+    *   `cd [path]`: 切換當前工作目錄 (Shell 模擬導航)
+    *   `write [path] [content]`: 覆寫模式寫入檔案
+    *   `gui`: (需執行 `gui.exe`) 啟動視窗介面管理
+    *   `format`: `mkfs` 的別名
+    *   `info`: 顯示磁碟與 Inode 使用狀況
+    *   `exit`: 離開 Shell
 
 **範例**:
 ```text
+minifs:/> mkfs disk.img
 minifs:/> mkdir docs
-minifs:/> cd docs
-minifs:/docs> touch note.txt
-minifs:/docs> write note.txt Hello_MiniFS
-minifs:/docs> cat note.txt
-Hello_MiniFS
+minifs:/> touch docs/readme.txt
+minifs:/> append docs/readme.txt "Hello MiniFS!"
+minifs:/> cat docs/readme.txt
+Hello MiniFS!
 ```
 
 ### 3. 圖形化介面 (`gui.exe`)
