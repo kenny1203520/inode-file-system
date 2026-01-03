@@ -78,6 +78,88 @@ void Navigate(const std::string& new_path) {
     }
 }
 
+// Viewer Window Procedure
+LRESULT CALLBACK ViewerWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    switch (uMsg) {
+    case WM_SIZE:
+        {
+            // Resize the edit control to fit the client area
+            RECT rcClient;
+            GetClientRect(hwnd, &rcClient);
+            HWND hEdit = GetDlgItem(hwnd, 1001); // ID 1001 for the edit control
+            SetWindowPos(hEdit, NULL, 0, 0, rcClient.right, rcClient.bottom, SWP_NOZORDER);
+        }
+        return 0;
+    case WM_CLOSE:
+        // Do not quit the app, just close this viewer window
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+void ShowFileViewer(const std::string& filename, const std::string& content) {
+    static bool classRegistered = false;
+    const wchar_t VIEWER_CLASS[] = L"MiniFS_Viewer_Class";
+
+    if (!classRegistered) {
+        WNDCLASS wc = { };
+        wc.lpfnWndProc = ViewerWindowProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = VIEWER_CLASS;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        RegisterClass(&wc);
+        classRegistered = true;
+    }
+
+    std::wstring wTitle = toWString("Viewer: " + filename);
+    HWND hViewer = CreateWindowEx(
+        0, VIEWER_CLASS, wTitle.c_str(),
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE, // WS_OVERLAPPEDWINDOW gives resize, min/max, close
+        CW_USEDEFAULT, CW_USEDEFAULT, 800, 600,
+        NULL, NULL, GetModuleHandle(NULL), NULL
+    );
+
+    if (hViewer) {
+        // Create Read-Only Edit Control for content
+        // Convert content to CRLF for Windows Edit control if needed, but Edit usually handles LF okay-ish, 
+        // strictly standard windows edit control likes \r\n. 
+        // Let's do a quick pass to ensure \n -> \r\n if strictly needed, but often \r\n is safer.
+        std::string safeContent;
+        safeContent.reserve(content.size() + content.size() / 10);
+        for (size_t i = 0; i < content.size(); ++i) {
+            if (content[i] == '\n' && (i == 0 || content[i-1] != '\r')) {
+                safeContent += "\r\n";
+            } else {
+                safeContent += content[i];
+            }
+        }
+
+        std::wstring wContent = toWString(safeContent);
+
+        CreateWindow(
+            L"EDIT", wContent.c_str(),
+            WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | 
+            ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY,
+            0, 0, 800, 600, // Initial size, will be resized by WM_SIZE
+            hViewer, (HMENU)1001, GetModuleHandle(NULL), NULL
+        );
+        
+        // Trigger a resize to fit correctly initially
+        RECT rc;
+        GetClientRect(hViewer, &rc);
+        HWND hEdit = GetDlgItem(hViewer, 1001);
+        MoveWindow(hEdit, 0, 0, rc.right, rc.bottom, TRUE);
+        
+        // Set font to fixed width for code/text viewing
+        HFONT hFont = CreateFont(20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, 
+                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, 
+                                 DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+        SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+    }
+}
+
 void OnDoubleClick() {
     int idx = (int)SendMessage(hList, LB_GETCURSEL, 0, 0);
     if (idx != LB_ERR) {
@@ -112,7 +194,8 @@ void OnDoubleClick() {
                  int r = fs.read(target, buf.data(), inode.size);
                  if (r >= 0) {
                      buf[r] = 0;
-                     MessageBoxA(NULL, buf.data(), actualName.c_str(), MB_OK);
+                     // MessageBoxA(NULL, buf.data(), actualName.c_str(), MB_OK);
+                     ShowFileViewer(actualName, buf.data());
                  }
             }
         }
