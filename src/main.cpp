@@ -1,5 +1,8 @@
 #include <iostream>
 #include <iomanip>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include "FileSystem.h"
 
 void printSeparator() {
@@ -19,6 +22,9 @@ void printFileContent(const std::string& path, FileSystem& fs) {
 }
 
 int main() {
+#ifdef _WIN32
+    SetConsoleOutputCP(65001); // Set console to UTF-8
+#endif
     std::cout << "\n╔════════════════════════════════════════════════╗" << std::endl;
     std::cout <<   "║    MiniFS I-node like 檔案系統示範程式          ║" << std::endl;
     std::cout <<   "╚════════════════════════════════════════════════╝\n" << std::endl;

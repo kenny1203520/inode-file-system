@@ -4,6 +4,9 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // Helper to tokenize input
 std::vector<std::string> tokenize(const std::string& input) {
@@ -35,6 +38,9 @@ std::string resolvePath(const std::string& current, const std::string& target) {
 }
 
 int main() {
+#ifdef _WIN32
+    SetConsoleOutputCP(65001);
+#endif
     FileSystem fs;
     if (!fs.mount("disk.img")) {
         // If mount fails, try format
