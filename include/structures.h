@@ -16,13 +16,13 @@ enum class FileType : uint32_t {
 // Superblock 結構 - 儲存檔案系統的全局資訊
 // Size MUST vary to be exactly BLOCK_SIZE (4096)
 struct Superblock {
-    uint32_t magic;                    // 魔數
-    uint32_t total_blocks;             // 總區塊數 (4096)
-    uint32_t total_inodes;             // 總 Inode 數 (256)
-    uint32_t inode_bitmap_blk;         // Inode Bitmap 的起始區塊 (1)
-    uint32_t block_bitmap_blk;         // Block Bitmap 的起始區塊 (2)
-    uint32_t inode_table_blk;          // Inode Table 的起始區塊 (3)
-    uint32_t data_blk_start;           // 資料區起始區塊 (7)
+    uint32_t magic;                 // 魔數
+    uint32_t total_blocks;          // 總區塊數 (4096)
+    uint32_t total_inodes;          // 總 Inode 數 (256)
+    uint32_t inode_bitmap_blk;      // Inode Bitmap 的起始區塊 (1)
+    uint32_t block_bitmap_blk;      // Block Bitmap 的起始區塊 (2)
+    uint32_t inode_table_blk;       // Inode Table 的起始區塊 (3)
+    uint32_t data_blk_start;        // 資料區起始區塊 (7)
     
     // Padding to fill 4096 bytes
     // Used 7 * 4 = 28 bytes.

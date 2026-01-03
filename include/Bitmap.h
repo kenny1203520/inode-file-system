@@ -9,12 +9,13 @@
 class Bitmap {
 private:
     DiskEmulator* disk_;
-    uint32_t start_block_;     // bitmap 起始區塊號
-    uint32_t num_blocks_;      // bitmap 佔用的區塊數
-    uint32_t total_bits_;      // 總位元數
+    uint32_t start_block_;      // bitmap 起始區塊號
+    uint32_t num_blocks_;       // bitmap 佔用的區塊數
+    uint32_t total_bits_;       // 總位元數
     std::vector<uint8_t> data_; // bitmap 資料（在記憶體中）
 
 public:
+    // 建構子
     Bitmap(DiskEmulator* disk, uint32_t start_block, uint32_t num_blocks, uint32_t total_bits);
     
     // 載入 bitmap 從磁碟

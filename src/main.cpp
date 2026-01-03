@@ -20,8 +20,8 @@ void printFileContent(const std::string& path, FileSystem& fs) {
 
 int main() {
     std::cout << "\n╔════════════════════════════════════════════════╗" << std::endl;
-    std::cout << "║    Inode 檔案系統示範程式                     ║" << std::endl;
-    std::cout << "╚════════════════════════════════════════════════╝\n" << std::endl;
+    std::cout <<   "║    MiniFS I-node like 檔案系統示範程式          ║" << std::endl;
+    std::cout <<   "╚════════════════════════════════════════════════╝\n" << std::endl;
 
     FileSystem fs;
 
@@ -41,6 +41,7 @@ int main() {
     fs.mkdir("/home/user");
     fs.mkdir("/home/user/documents");
     fs.mkdir("/tmp");
+    fs.mkdir("/docs");
     
     std::cout << "\n根目錄內容:" << std::endl;
     auto root_files = fs.list("/");
@@ -51,6 +52,12 @@ int main() {
     std::cout << "\n/home 目錄內容:" << std::endl;
     auto home_files = fs.list("/home");
     for (const auto& file : home_files) {
+        std::cout << "  - " << file << std::endl;
+    }
+
+    std::cout << "\n/docs 目錄內容:" << std::endl;
+    auto docs_files = fs.list("/docs");
+    for (const auto& file : docs_files) {
         std::cout << "  - " << file << std::endl;
     }
 
@@ -73,12 +80,19 @@ int main() {
     fs.write("/home/user/documents/readme.txt", content2.c_str(), content2.size());
     std::cout << "已寫入 " << content2.size() << " bytes 到 /home/user/documents/readme.txt" << std::endl;
 
+    fs.create("/docs/readme.txt", false);
+    std::string content3 = "Hello MiniFS!";
+    fs.write("/docs/readme.txt", content3.c_str(), content3.size());
+    std::cout << "已寫入 " << content3.size() << " bytes 到 /docs/readme.txt" << std::endl;
+
     // ===== 4. 讀取文件 =====
     printSeparator();
     std::cout << "步驟 4: 讀取文件內容" << std::endl;
     printFileContent("/home/user/hello.txt", fs);
     std::cout << std::endl;
     printFileContent("/home/user/documents/readme.txt", fs);
+    std::cout << std::endl;
+    printFileContent("/docs/readme.txt", fs);
 
     // ===== 5. 測試較大文件 (Max 16KB) =====
     printSeparator();
@@ -132,6 +146,18 @@ int main() {
         }
     }
 
+    std::cout << "\n/docs 目錄:" << std::endl;
+    docs_files = fs.list("/docs");
+    for (const auto& file : docs_files) {
+        Inode inode;
+        std::string full_path = "/docs/" + file;
+        if (fs.stat(full_path, inode) && file != "." && file != "..") {
+            std::string type = inode.isDirectory() ? "[DIR] " : "[FILE]";
+            std::cout << "  " << type << " " << std::setw(20) << std::left << file 
+                      << " (" << inode.size << " bytes)" << std::endl;
+        }
+    }
+
     // ===== 7. 刪除文件 =====
     printSeparator();
     std::cout << "步驟 7: 刪除文件" << std::endl;
@@ -140,6 +166,15 @@ int main() {
     std::cout << "\n刪除後 /tmp 目錄:" << std::endl;
     tmp_files = fs.list("/tmp");
     for (const auto& file : tmp_files) {
+        if (file != "." && file != "..") {
+            std::cout << "  - " << file << std::endl;
+        }
+    }
+
+    fs.remove("/docs/readme.txt");
+    std::cout << "\n刪除後 /docs 目錄:" << std::endl;
+    docs_files = fs.list("/docs");
+    for (const auto& file : docs_files) {
         if (file != "." && file != "..") {
             std::cout << "  - " << file << std::endl;
         }
@@ -161,6 +196,7 @@ int main() {
     if (fs.mount("disk.img")) {
         std::cout << "\n驗證資料是否保存:" << std::endl;
         printFileContent("/home/user/hello.txt", fs);
+        printFileContent("/docs/readme.txt", fs);
         
         std::cout << "\n/home/user 目錄內容:" << std::endl;
         auto persisted_files = fs.list("/home/user");
