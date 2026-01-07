@@ -164,9 +164,55 @@ int main() {
         }
     }
 
-    // ===== 7. 刪除文件 =====
+    // ===== 7. 複製文件 =====
     printSeparator();
-    std::cout << "步驟 7: 刪除文件" << std::endl;
+    std::cout << "步驟 7: 測試 Copy 和 Move 功能" << std::endl;
+    
+    // 測試複製文件
+    std::cout << "\n[Copy] 複製 /home/user/hello.txt 到 /tmp/hello_copy.txt" << std::endl;
+    if (fs.copy("/home/user/hello.txt", "/tmp/hello_copy.txt")) {
+        std::cout << "✓ 複製成功" << std::endl;
+        printFileContent("/tmp/hello_copy.txt", fs);
+    } else {
+        std::cout << "✗ 複製失敗" << std::endl;
+    }
+
+    // 測試移動文件
+    std::cout << "\n[Move] 移動 /tmp/hello_copy.txt 到 /docs/moved_hello.txt" << std::endl;
+    if (fs.move("/tmp/hello_copy.txt", "/docs/moved_hello.txt")) {
+        std::cout << "✓ 移動成功" << std::endl;
+        
+        std::cout << "\n/tmp 目錄 (移動後):" << std::endl;
+        auto tmp_after_move = fs.list("/tmp");
+        for (const auto& file : tmp_after_move) {
+            if (file != "." && file != "..") {
+                std::cout << "  - " << file << std::endl;
+            }
+        }
+        
+        std::cout << "\n/docs 目錄 (移動後):" << std::endl;
+        auto docs_after_move = fs.list("/docs");
+        for (const auto& file : docs_after_move) {
+            if (file != "." && file != "..") {
+                std::cout << "  - " << file << std::endl;
+            }
+        }
+    } else {
+        std::cout << "✗ 移動失敗" << std::endl;
+    }
+
+    // 測試重命名 (move 的特殊情況)
+    std::cout << "\n[Rename] 重命名 /docs/moved_hello.txt 到 /docs/renamed.txt" << std::endl;
+    if (fs.move("/docs/moved_hello.txt", "/docs/renamed.txt")) {
+        std::cout << "✓ 重命名成功" << std::endl;
+        printFileContent("/docs/renamed.txt", fs);
+    } else {
+        std::cout << "✗ 重命名失敗" << std::endl;
+    }
+
+    // ===== 8. 刪除文件 =====
+    printSeparator();
+    std::cout << "步驟 8: 刪除文件" << std::endl;
     fs.remove("/tmp/bigfile.dat");
     
     std::cout << "\n刪除後 /tmp 目錄:" << std::endl;
@@ -186,23 +232,23 @@ int main() {
         }
     }
 
-    // ===== 8. 最終狀態 =====
+    // ===== 9. 最終狀態 =====
     printSeparator();
-    std::cout << "步驟 8: 檔案系統最終狀態" << std::endl;
+    std::cout << "步驟 9: 檔案系統最終狀態" << std::endl;
     fs.printInfo();
 
-    // ===== 9. 卸載 =====
+    // ===== 10. 卸載 =====
     printSeparator();
-    std::cout << "步驟 9: 卸載檔案系統" << std::endl;
+    std::cout << "步驟 10: 卸載檔案系統" << std::endl;
     fs.unmount();
 
-    // ===== 10. 重新掛載並驗證持久性 =====
+    // ===== 11. 重新掛載並驗證持久性 =====
     printSeparator();
-    std::cout << "步驟 10: 重新掛載並驗證資料持久性" << std::endl;
+    std::cout << "步驟 11: 重新掛載並驗證資料持久性" << std::endl;
     if (fs.mount("disk.img")) {
         std::cout << "\n驗證資料是否保存:" << std::endl;
         printFileContent("/home/user/hello.txt", fs);
-        printFileContent("/docs/readme.txt", fs);
+        printFileContent("/docs/renamed.txt", fs);
         
         std::cout << "\n/home/user 目錄內容:" << std::endl;
         auto persisted_files = fs.list("/home/user");
@@ -217,7 +263,7 @@ int main() {
 
     printSeparator();
     std::cout << "✓ 所有測試完成！" << std::endl;
-    std::cout << "\n產生的檔案系統映像: filesystem.img" << std::endl;
+    std::cout << "\n產生的檔案系統映像: disk.img" << std::endl;
     printSeparator();
 
     return 0;
