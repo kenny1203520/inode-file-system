@@ -21,6 +21,8 @@ HWND hBtnCopy, hBtnMove, hBtnRename, hBtnRefresh;
 std::string clipboard_path = ""; // 用於複製/移動操作
 bool is_move_operation = false; // true 表示移動，false 表示複製
 std::wstring g_rename_buffer; // 用於重命名對話框的輸入
+std::string g_edit_file_path = ""; // 正在編輯的檔案路徑
+HWND g_edit_window = NULL; // 編輯視窗句柄
 
 // 控制項 ID 定義
 #define ID_LIST 101
@@ -46,6 +48,7 @@ std::wstring g_rename_buffer; // 用於重命名對話框的輸入
 #define ID_MENU_TOUCH 209
 #define ID_MENU_UP 210
 #define ID_MENU_PROPERTIES 211
+#define ID_MENU_EDIT 212
 
 // 工具列按鈕 ID
 #define ID_TOOLBAR_UP 301
@@ -102,6 +105,168 @@ std::string toString(const std::wstring& wstr) {
     std::string strTo(size_needed, 0);
     WideCharToMultiByte(CP_UTF8, 0, &wstr[0], (int)wstr.size(), &strTo[0], size_needed, NULL, NULL);
     return strTo;
+}
+
+// 編輯視窗的視窗處理程序
+LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    static HWND hEdit = NULL;
+    
+    switch (uMsg) {
+    case WM_CREATE:
+        {
+            // 建立編輯框
+            hEdit = CreateWindowEx(
+                WS_EX_CLIENTEDGE,
+                L"EDIT",
+                L"",
+                WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
+                0, 0, 800, 600,
+                hwnd, (HMENU)1, NULL, NULL
+            );
+            
+            // 設定字型
+            HFONT hFont = CreateFont(16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                DEFAULT_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
+            SendMessage(hEdit, WM_SETFONT, (WPARAM)hFont, TRUE);
+            
+            // 讀取檔案內容
+            if (!g_edit_file_path.empty()) {
+                char buffer[16384]; // 最大 16KB
+                int bytesRead = fs.read(g_edit_file_path, buffer, sizeof(buffer));
+                
+                if (bytesRead > 0) {
+                    buffer[bytesRead] = '\0';
+                    std::wstring content = toWString(std::string(buffer, bytesRead));
+                    SetWindowText(hEdit, content.c_str());
+                } else if (bytesRead == 0) {
+                    SetWindowText(hEdit, L"");
+                } else {
+                    MessageBox(hwnd, L"讀取檔案失敗", L"錯誤", MB_OK | MB_ICONERROR);
+                }
+            }
+        }
+        return 0;
+        
+    case WM_SIZE:
+        if (hEdit) {
+            RECT rect;
+            GetClientRect(hwnd, &rect);
+            MoveWindow(hEdit, 0, 0, rect.right, rect.bottom, TRUE);
+        }
+        return 0;
+        
+    case WM_KEYDOWN:
+        // 處理 Ctrl+S
+        if (wParam == 'S' && GetKeyState(VK_CONTROL) < 0) {
+            // 儲存檔案
+            int textLen = GetWindowTextLength(hEdit);
+            if (textLen > 16384 - 1) {
+                MessageBox(hwnd, L"檔案內容超過最大大小限制 (16KB)", L"錯誤", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+            
+            wchar_t* wbuffer = new wchar_t[textLen + 1];
+            GetWindowText(hEdit, wbuffer, textLen + 1);
+            std::string content = toString(std::wstring(wbuffer));
+            delete[] wbuffer;
+            
+            int bytesWritten = fs.write(g_edit_file_path, content.c_str(), content.length());
+            
+            if (bytesWritten >= 0) {
+                MessageBox(hwnd, L"儲存成功", L"成功", MB_OK | MB_ICONINFORMATION);
+                SetWindowText(hwnd, (L"編輯檔案 - " + toWString(g_edit_file_path) + L" (已儲存)").c_str());
+            } else {
+                MessageBox(hwnd, L"儲存失敗", L"錯誤", MB_OK | MB_ICONERROR);
+            }
+            return 0;
+        }
+        break;
+        
+    case WM_CLOSE:
+        {
+            int result = MessageBox(hwnd, L"是否儲存變更？", L"關閉編輯器", MB_YESNOCANCEL | MB_ICONQUESTION);
+            if (result == IDCANCEL) {
+                return 0;
+            } else if (result == IDYES) {
+                // 儲存檔案
+                int textLen = GetWindowTextLength(hEdit);
+                if (textLen <= 16384 - 1) {
+                    wchar_t* wbuffer = new wchar_t[textLen + 1];
+                    GetWindowText(hEdit, wbuffer, textLen + 1);
+                    std::string content = toString(std::wstring(wbuffer));
+                    delete[] wbuffer;
+                    
+                    fs.write(g_edit_file_path, content.c_str(), content.length());
+                }
+            }
+            DestroyWindow(hwnd);
+            g_edit_window = NULL;
+            g_edit_file_path.clear();
+        }
+        return 0;
+        
+    case WM_DESTROY:
+        g_edit_window = NULL;
+        g_edit_file_path.clear();
+        return 0;
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+// 開啟檔案編輯視窗
+void OpenFileEditor(const std::string& filePath) {
+    // 檢查是否為檔案
+    Inode inode;
+    if (!fs.stat(filePath, inode)) {
+        MessageBox(NULL, L"無法取得檔案資訊", L"錯誤", MB_OK | MB_ICONERROR);
+        return;
+    }
+    
+    if (inode.file_type != FileType::REGULAR) {
+        MessageBox(NULL, L"只能編輯檔案", L"錯誤", MB_OK | MB_ICONERROR);
+        return;
+    }
+    
+    // 如果已有編輯視窗開啟，先關閉
+    if (g_edit_window != NULL) {
+        SetForegroundWindow(g_edit_window);
+        MessageBox(NULL, L"已有編輯視窗開啟", L"提示", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    
+    g_edit_file_path = filePath;
+    
+    // 註冊視窗類別
+    static bool classRegistered = false;
+    const wchar_t EDIT_CLASS[] = L"MiniFS_EditWindow";
+    
+    if (!classRegistered) {
+        WNDCLASS wc = { };
+        wc.lpfnWndProc = EditWindowProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = EDIT_CLASS;
+        wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+        RegisterClass(&wc);
+        classRegistered = true;
+    }
+    
+    // 建立編輯視窗
+    g_edit_window = CreateWindowEx(
+        0,
+        EDIT_CLASS,
+        (L"編輯檔案 - " + toWString(filePath)).c_str(),
+        WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+        CW_USEDEFAULT, CW_USEDEFAULT, 820, 650,
+        NULL, NULL, GetModuleHandle(NULL), NULL
+    );
+    
+    if (!g_edit_window) {
+        MessageBox(NULL, L"無法建立編輯視窗", L"錯誤", MB_OK | MB_ICONERROR);
+        g_edit_file_path.clear();
+    }
 }
 
 // 重命名對話框視窗處理程序
@@ -229,6 +394,20 @@ void ShowContextMenu(HWND hwnd, int x, int y) {
         // 有選擇項目時的選單
         AppendMenu(hMenu, MF_STRING, ID_MENU_OPEN, L"開啟");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+        
+        // 檢查是否為檔案，只有檔案才顯示編輯選項
+        std::string selectedPath = GetSelectedPath();
+        Inode inode;
+        bool isFile = false;
+        if (fs.stat(selectedPath, inode)) {
+            isFile = (inode.file_type == FileType::REGULAR);
+        }
+        
+        if (isFile) {
+            AppendMenu(hMenu, MF_STRING, ID_MENU_EDIT, L"編輯");
+            AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
+        }
+        
         AppendMenu(hMenu, MF_STRING, ID_MENU_COPY, L"複製");
         AppendMenu(hMenu, MF_STRING, ID_MENU_CUT, L"剪下（移動）");
         AppendMenu(hMenu, MF_STRING | (clipboard_path.empty() ? MF_GRAYED : 0), ID_MENU_PASTE, L"貼上");
@@ -542,16 +721,8 @@ void OnDoubleClick() {
         if (isDir) {
             Navigate(target);
         } else {
-            // 顯示檔案內容
-            Inode inode;
-            if (fs.stat(target, inode)) {
-                 std::vector<char> buf(inode.size + 1);
-                 int r = fs.read(target, buf.data(), inode.size);
-                 if (r >= 0) {
-                     buf[r] = 0;
-                     ShowFileViewer(actualName, buf.data());
-                 }
-            }
+            // 開啟檔案編輯器
+            OpenFileEditor(target);
         }
     }
 }
@@ -818,6 +989,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
         }
         // 處理右鍵選單命令
         else if (LOWORD(wParam) == ID_MENU_OPEN) OnDoubleClick();
+        else if (LOWORD(wParam) == ID_MENU_EDIT) {
+            std::string path = GetSelectedPath();
+            if (!path.empty()) {
+                OpenFileEditor(path);
+            }
+        }
         else if (LOWORD(wParam) == ID_MENU_COPY) OnCopy();
         else if (LOWORD(wParam) == ID_MENU_CUT) OnMove();
         else if (LOWORD(wParam) == ID_MENU_PASTE) OnPaste();
