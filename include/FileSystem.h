@@ -55,6 +55,12 @@ public:
     // 獲取檔案資訊
     bool stat(const std::string& path, Inode& inode);
 
+    // 複製檔案或目錄
+    bool copy(const std::string& src_path, const std::string& dest_path);
+
+    // 移動/重命名檔案或目錄
+    bool move(const std::string& src_path, const std::string& dest_path);
+
     // 顯示檔案系統資訊
     void printInfo();
 

@@ -4,6 +4,9 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // Helper to tokenize input
 std::vector<std::string> tokenize(const std::string& input) {
@@ -35,6 +38,9 @@ std::string resolvePath(const std::string& current, const std::string& target) {
 }
 
 int main() {
+#ifdef _WIN32
+    SetConsoleOutputCP(65001);
+#endif
     FileSystem fs;
     if (!fs.mount("disk.img")) {
         // If mount fails, try format
@@ -75,8 +81,11 @@ int main() {
                       << "\n  [Extensions]\n"
                       << "  cd <path>       Change current directory\n"
                       << "  write <path> <text> Overwrite text to file\n"
+                      << "  cp <src> <dest> Copy file\n"
+                      << "  mv <src> <dest> Move/rename file or directory\n"
                       << "  format          Alias for mkfs\n"
                       << "  info            Show disk usage info\n"
+                      << "  clear/cls       Clear screen\n"
                       << "  exit            Exit shell\n";
         } else if (cmd == "mkfs") {
             std::string diskName = "disk.img";
@@ -298,6 +307,51 @@ int main() {
             int w = fs.write(target, content.c_str(), content.size(), 0);
             if (w >= 0) std::cout << "Written " << w << " bytes." << std::endl;
             else std::cout << "Write failed." << std::endl;
+
+        } else if (cmd == "cp") {
+            if (args.size() < 3) {
+                std::cout << "Usage: cp <source> <destination>" << std::endl;
+                continue;
+            }
+            
+            std::string src = args[1];
+            std::string dest = args[2];
+            
+            // Resolve relative paths
+            if (src[0] != '/') src = (current_path == "/") ? "/" + src : current_path + "/" + src;
+            if (dest[0] != '/') dest = (current_path == "/") ? "/" + dest : current_path + "/" + dest;
+            
+            if (fs.copy(src, dest)) {
+                std::cout << "✓ File copied successfully: " << src << " -> " << dest << std::endl;
+            } else {
+                std::cout << "✗ Copy failed" << std::endl;
+            }
+            
+        } else if (cmd == "mv") {
+            if (args.size() < 3) {
+                std::cout << "Usage: mv <source> <destination>" << std::endl;
+                continue;
+            }
+            
+            std::string src = args[1];
+            std::string dest = args[2];
+            
+            // Resolve relative paths
+            if (src[0] != '/') src = (current_path == "/") ? "/" + src : current_path + "/" + src;
+            if (dest[0] != '/') dest = (current_path == "/") ? "/" + dest : current_path + "/" + dest;
+            
+            if (fs.move(src, dest)) {
+                std::cout << "✓ Moved/renamed successfully: " << src << " -> " << dest << std::endl;
+            } else {
+                std::cout << "✗ Move failed (destination may exist or source not found)" << std::endl;
+            }
+            
+        } else if (cmd == "clear" || cmd == "cls") {
+#ifdef _WIN32
+            system("cls");
+#else
+            system("clear");
+#endif
 
         } else {
             std::cout << "Unknown command" << std::endl;
