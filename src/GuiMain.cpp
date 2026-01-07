@@ -239,8 +239,12 @@ void ShowContextMenu(HWND hwnd, int x, int y) {
         AppendMenu(hMenu, MF_STRING, ID_MENU_PROPERTIES, L"內容");
     } else {
         // 無選擇時的選單
-        AppendMenu(hMenu, MF_STRING, ID_MENU_MKDIR, L"新增資料夾");
-        AppendMenu(hMenu, MF_STRING, ID_MENU_TOUCH, L"新增檔案");
+        // 建立「新增」子選單
+        HMENU hNewMenu = CreatePopupMenu();
+        AppendMenu(hNewMenu, MF_STRING, ID_MENU_MKDIR, L"資料夾");
+        AppendMenu(hNewMenu, MF_STRING, ID_MENU_TOUCH, L"檔案");
+        
+        AppendMenu(hMenu, MF_POPUP, (UINT_PTR)hNewMenu, L"新增");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
         AppendMenu(hMenu, MF_STRING | (clipboard_path.empty() ? MF_GRAYED : 0), ID_MENU_PASTE, L"貼上");
         AppendMenu(hMenu, MF_SEPARATOR, 0, NULL);
@@ -280,6 +284,58 @@ void ShowProperties() {
     std::wstring message;
     message += L"名稱: " + toWString(name) + L"\n";
     message += L"類型: " + std::wstring((inode.file_type == FileType::DIRECTORY) ? L"資料夾" : L"檔案") + L"\n";
+    
+    // Inode 資訊
+    message += L"Inode 編號: " + std::to_wstring(inode.inode_num) + L"\n";
+    
+    // 計算佔用區塊數量
+    int blockCount = 0;
+    for (int i = 0; i < Config::DIRECT_BLOCKS; i++) {
+        if (inode.direct_blks[i] != 0) {
+            blockCount++;
+        }
+    }
+    message += L"佔用區塊: " + std::to_wstring(blockCount) + L" 個\n";
+    
+    // 磁碟佔用空間
+    uint32_t diskSpace = blockCount * Config::BLOCK_SIZE;
+    message += L"磁碟空間: " + std::to_wstring(diskSpace) + L" bytes";
+    if (diskSpace >= 1024) {
+        double kb = diskSpace / 1024.0;
+        wchar_t buf[50];
+        swprintf(buf, 50, L" (%.2f KB)", kb);
+        message += buf;
+    }
+    message += L"\n";
+    
+    // 資料夾項目數量
+    if (inode.file_type == FileType::DIRECTORY) {
+        std::vector<std::string> entries = fs.list(target);
+        int itemCount = 0;
+        int folderCount = 0;
+        int fileCount = 0;
+        
+        for (const auto& entry : entries) {
+            if (entry == "." || entry == "..") continue;
+            itemCount++;
+            
+            std::string fullPath = (target == "/") ? "/" + entry : target + "/" + entry;
+            Inode childInode;
+            if (fs.stat(fullPath, childInode)) {
+                if (childInode.file_type == FileType::DIRECTORY) {
+                    folderCount++;
+                } else {
+                    fileCount++;
+                }
+            }
+        }
+        
+        message += L"包含: " + std::to_wstring(itemCount) + L" 個項目 (" 
+                   + std::to_wstring(folderCount) + L" 個資料夾, " 
+                   + std::to_wstring(fileCount) + L" 個檔案)\n";
+    }
+    
+    message += L"\n";
     
     // 計算實際大小（資料夾會遞迴計算總大小）
     uint32_t actualSize = (inode.file_type == FileType::DIRECTORY) 
