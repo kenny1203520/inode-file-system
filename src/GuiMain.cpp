@@ -110,10 +110,15 @@ std::string toString(const std::wstring& wstr) {
 // 編輯視窗的視窗處理程序
 LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     static HWND hEdit = NULL;
+    static bool isModified = false; // 追蹤內容是否被修改
+    static bool isInitializing = true; // 追蹤是否正在初始化
     
     switch (uMsg) {
     case WM_CREATE:
         {
+            isModified = false;
+            isInitializing = true;
+            
             // 建立編輯框
             hEdit = CreateWindowEx(
                 WS_EX_CLIENTEDGE,
@@ -145,6 +150,19 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                     MessageBox(hwnd, L"讀取檔案失敗", L"錯誤", MB_OK | MB_ICONERROR);
                 }
             }
+            
+            // 初始化完成，開始追蹤變更
+            isInitializing = false;
+        }
+        return 0;
+        
+    case WM_COMMAND:
+        if (HIWORD(wParam) == EN_CHANGE && LOWORD(wParam) == 1) {
+            // 編輯框內容變更
+            if (!isInitializing) {
+                isModified = true;
+                SetWindowText(hwnd, (L"編輯檔案 - " + toWString(g_edit_file_path) + L" *").c_str());
+            }
         }
         return 0;
         
@@ -174,6 +192,7 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             int bytesWritten = fs.write(g_edit_file_path, content.c_str(), content.length());
             
             if (bytesWritten >= 0) {
+                isModified = false; // 重設修改標記
                 MessageBox(hwnd, L"儲存成功", L"成功", MB_OK | MB_ICONINFORMATION);
                 SetWindowText(hwnd, (L"編輯檔案 - " + toWString(g_edit_file_path) + L" (已儲存)").c_str());
             } else {
@@ -185,19 +204,22 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         
     case WM_CLOSE:
         {
-            int result = MessageBox(hwnd, L"是否儲存變更？", L"關閉編輯器", MB_YESNOCANCEL | MB_ICONQUESTION);
-            if (result == IDCANCEL) {
-                return 0;
-            } else if (result == IDYES) {
-                // 儲存檔案
-                int textLen = GetWindowTextLength(hEdit);
-                if (textLen <= 16384 - 1) {
-                    wchar_t* wbuffer = new wchar_t[textLen + 1];
-                    GetWindowText(hEdit, wbuffer, textLen + 1);
-                    std::string content = toString(std::wstring(wbuffer));
-                    delete[] wbuffer;
-                    
-                    fs.write(g_edit_file_path, content.c_str(), content.length());
+            // 只在內容有修改時才詢問
+            if (isModified) {
+                int result = MessageBox(hwnd, L"是否儲存變更？", L"關閉編輯器", MB_YESNOCANCEL | MB_ICONQUESTION);
+                if (result == IDCANCEL) {
+                    return 0;
+                } else if (result == IDYES) {
+                    // 儲存檔案
+                    int textLen = GetWindowTextLength(hEdit);
+                    if (textLen <= 16384 - 1) {
+                        wchar_t* wbuffer = new wchar_t[textLen + 1];
+                        GetWindowText(hEdit, wbuffer, textLen + 1);
+                        std::string content = toString(std::wstring(wbuffer));
+                        delete[] wbuffer;
+                        
+                        fs.write(g_edit_file_path, content.c_str(), content.length());
+                    }
                 }
             }
             DestroyWindow(hwnd);

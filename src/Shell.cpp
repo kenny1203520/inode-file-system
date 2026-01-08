@@ -39,7 +39,8 @@ std::string resolvePath(const std::string& current, const std::string& target) {
 
 int main() {
 #ifdef _WIN32
-    SetConsoleOutputCP(65001);
+    SetConsoleOutputCP(CP_UTF8);
+    SetConsoleCP(CP_UTF8);
 #endif
     FileSystem fs;
     if (!fs.mount("disk.img")) {
