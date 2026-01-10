@@ -456,6 +456,17 @@ int FileSystem::write(const std::string& path, const void* buffer, uint32_t size
     inode_manager_->readInode(inode_num, inode);
     if (!inode.isFile()) return -1;
 
+    uint32_t original_size = inode.size;
+
+    // 如果寫入長度為 0，視為清空檔案/截斷
+    if (size == 0) {
+        inode_manager_->freeAllBlocks(inode);
+        inode.size = offset; // 通常為 0
+        inode_manager_->writeInode(inode_num, inode);
+        block_bitmap_->save();
+        return 0;
+    }
+
     uint32_t bytes_written = 0;
     const uint8_t* in = (const uint8_t*)buffer;
 
@@ -482,8 +493,21 @@ int FileSystem::write(const std::string& path, const void* buffer, uint32_t size
         bytes_written += to_write;
     }
 
-    if (offset + bytes_written > inode.size) {
-        inode.size = offset + bytes_written;
+    uint32_t new_size = offset + bytes_written;
+
+    // 釋放多餘的區塊（處理縮小或清空檔案的情況）
+    if (new_size < original_size) {
+        uint32_t required_blocks = (new_size + Config::BLOCK_SIZE - 1) / Config::BLOCK_SIZE;
+        for (uint32_t i = required_blocks; i < Config::DIRECT_BLOCKS; ++i) {
+            if (inode.direct_blks[i] != 0) {
+                inode_manager_->freeBlock(inode.direct_blks[i]);
+                inode.direct_blks[i] = 0;
+            }
+        }
+    }
+
+    if (new_size != inode.size) {
+        inode.size = new_size;
         inode_manager_->writeInode(inode_num, inode);
     }
     block_bitmap_->save();

@@ -1,3 +1,4 @@
+﻿#define WIN32_LEAN_AND_MEAN
 #ifndef UNICODE
 #define UNICODE
 #endif 
@@ -141,7 +142,7 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                 int bytesRead = fs.read(g_edit_file_path, buffer, sizeof(buffer));
                 
                 if (bytesRead > 0) {
-                    buffer[bytesRead] = '\0';
+                    // 不需要手動加終止字元，直接以 bytesRead 建立字串避免越界
                     std::wstring content = toWString(std::string(buffer, bytesRead));
                     SetWindowText(hEdit, content.c_str());
                 } else if (bytesRead == 0) {
@@ -189,7 +190,13 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
             std::string content = toString(std::wstring(wbuffer));
             delete[] wbuffer;
             
-            int bytesWritten = fs.write(g_edit_file_path, content.c_str(), content.length());
+            // 以 UTF-8 位元組數檢查 16KB 上限
+            if (content.size() > 16384) {
+                MessageBox(hwnd, L"UTF-8 位元組長度超過 16KB 上限，請縮短內容或移除部分中文字/符號。", L"錯誤", MB_OK | MB_ICONERROR);
+                return 0;
+            }
+
+            int bytesWritten = fs.write(g_edit_file_path, content.c_str(), (uint32_t)content.size());
             
             if (bytesWritten >= 0) {
                 isModified = false; // 重設修改標記
@@ -216,9 +223,16 @@ LRESULT CALLBACK EditWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
                         wchar_t* wbuffer = new wchar_t[textLen + 1];
                         GetWindowText(hEdit, wbuffer, textLen + 1);
                         std::string content = toString(std::wstring(wbuffer));
+
+                        // 以 UTF-8 位元組數檢查 16KB 上限
+                        if (content.size() > 16384) {
+                            MessageBox(hwnd, L"UTF-8 位元組長度超過 16KB 上限，變更未儲存。", L"錯誤", MB_OK | MB_ICONERROR);
+                            delete[] wbuffer;
+                            return 0;
+                        }
                         delete[] wbuffer;
                         
-                        fs.write(g_edit_file_path, content.c_str(), content.length());
+                            fs.write(g_edit_file_path, content.c_str(), (uint32_t)content.size());
                     }
                 }
             }
@@ -944,7 +958,7 @@ void DeleteSelected() {
     if (target.empty()) return;
     
     int result = MessageBox(NULL, toWString("確定要刪除嗎？\n\n" + target).c_str(), 
-                           L"確認刪除", MB_YESNO | MB_ICONWARNING);
+                           L"確認刪除", MB_YESNO | MB_ICONEXCLAMATION);
     
     if (result == IDYES) {
         if (fs.remove(target)) {
@@ -1067,7 +1081,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR pCmdLine, int nCmdShow) {
     if (!fs.mount("disk.img")) {
         if (!fs.format("disk.img", false)) {
-            MessageBox(NULL, L"Failed to initialize disk.img", L"Error", MB_ICONERROR);
+            MessageBox(NULL, L"Failed to initialize disk.img", L"Error", MB_ICONEXCLAMATION);
             return 1;
         }
     }
