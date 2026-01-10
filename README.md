@@ -1,227 +1,114 @@
-# Inode 檔案系統實作
+# Inode-based File System (MiniFS)
 
-一個完整的基於 inode 的檔案系統實作，使用 C++ 開發。
-
-## 專案特色
-
-- ✅ 完整的 inode 結構實作
-- ✅ 多級索引（直接、單重間接、雙重間接區塊）
-- ✅ 支援目錄與檔案操作
-- ✅ 硬碟/記憶體雙後端儲存（可切換）
-- ✅ 持久化儲存
-- ✅ 完整的檔案 I/O 操作
-
-## 系統架構
-
-```
-├── include/              # 標頭檔
-│   ├── config.h         # 系統配置
-│   ├── structures.h     # 核心資料結構
-│   ├── DiskEmulator.h   # 儲存抽象層
-│   ├── Bitmap.h         # 位圖管理
-│   ├── InodeManager.h   # Inode 管理
-│   └── FileSystem.h     # 檔案系統 API
-├── src/                 # 源檔案
-│   ├── DiskEmulator.cpp
-│   ├── Bitmap.cpp
-│   ├── InodeManager.cpp
-│   ├── FileSystem.cpp
-│   └── main.cpp         # 示範程式
-└── CMakeLists.txt       # CMake 構建配置
-```
-
-## 檔案系統規格
-
-- **區塊大小**: 4KB
-- **總區塊數**: 1024 (4MB)
-- **Inode 數量**: 128
-- **支援最大檔案大小**: 約 4GB（透過雙重間接區塊）
-
-### 磁碟佈局
-
-```
-Block 0:     Superblock
-Blocks 1-2:  Inode Bitmap
-Blocks 3-4:  Block Bitmap  
-Blocks 5-8:  Inode Table
-Blocks 9+:   Data Blocks
-```
-
-## 編譯與執行
-
-### Windows (使用 CMake)
-
-```bash
-# 創建 build 目錄
-mkdir build
-cd build
-
-# 生成專案
-cmake ..
-
-# 編譯（根據生成器選擇）
-# Visual Studio:
-cmake --build . --config Release
-
-# MinGW:
-mingw32-make
-
-# 執行
-.\Release\inode_fs_demo.exe
-# 或
-.\inode_fs_demo.exe
-```
-
-### Linux / macOS
-
-```bash
-mkdir build
-cd build
-cmake ..
-make
-./inode_fs_demo
-```
-
-### 直接使用 g++ 編譯
-
-```bash
-g++ -std=c++17 -I include \
-    src/DiskEmulator.cpp \
-    src/Bitmap.cpp \
-    src/InodeManager.cpp \
-    src/FileSystem.cpp \
-    src/main.cpp \
-    -o inode_fs_demo
-```
-
-## 功能演示
-
-示範程式 (`main.cpp`) 展示了以下功能：
-
-1. **格式化檔案系統** - 初始化新的檔案系統
-2. **創建目錄結構** - 建立多層目錄
-3. **創建並寫入檔案** - 寫入文字檔案
-4. **讀取檔案** - 讀取並顯示檔案內容
-5. **大檔案測試** - 測試多級索引（寫入 60KB 檔案）
-6. **列出目錄** - 顯示目錄內容
-7. **刪除檔案** - 移除檔案並釋放空間
-8. **持久化測試** - 卸載後重新掛載，驗證資料保存
-
-## API 使用範例
-
-```cpp
-#include "FileSystem.h"
-
-int main() {
-    FileSystem fs;
-    
-    // 格式化新檔案系統
-    fs.format("my_disk.img");
-    
-    // 創建目錄
-    fs.mkdir("/home");
-    fs.mkdir("/home/user");
-    
-    // 創建檔案
-    fs.create("/home/user/test.txt", false);
-    
-    // 寫入資料
-    std::string data = "Hello, World!";
-    fs.write("/home/user/test.txt", data.c_str(), data.size());
-    
-    // 讀取資料
-    char buffer[100];
-    int bytes = fs.read("/home/user/test.txt", buffer, sizeof(buffer));
-    
-    // 列出目錄
-    auto files = fs.list("/home/user");
-    
-    // 顯示檔案系統資訊
-    fs.printInfo();
-    
-    return 0;
-}
-```
-
-## 切換儲存後端
-
-專案設計了抽象儲存層，可輕鬆切換：
-
-### 使用硬碟儲存（預設）
-
-```cpp
-fs.format("filesystem.img", false);  // false = 使用檔案
-```
-
-### 使用記憶體儲存
-
-```cpp
-fs.format("", true);  // true = 使用記憶體
-```
-
-## 核心資料結構
-
-### Superblock
-
-儲存檔案系統全局資訊：
-- 魔數（識別碼）
-- 總區塊數 / 空閒區塊數
-- 總 inode 數 / 空閒 inode 數
-- 各區域起始位置
-
-### Inode
-
-儲存檔案/目錄元數據：
-- 檔案類型（一般檔案/目錄）
-- 檔案大小
-- 12 個直接區塊指標
-- 單重/雙重間接區塊指標
-- 時間戳記
-
-### DirectoryEntry
-
-目錄項目：
-- Inode 編號
-- 檔案/目錄名稱
-
-## 多級索引說明
-
-支援大檔案的關鍵機制：
-
-- **直接區塊 (12個)**: 支援最多 48KB (12 × 4KB)
-- **單重間接**: 額外 4MB (1024 × 4KB)
-- **雙重間接**: 額外 4GB (1024 × 1024 × 4KB)
-
-## 作業說明
-
-此專案為作業系統課程的實作作業，展示了：
-
-1. inode 檔案系統的核心概念
-2. 區塊管理與分配
-3. 多級索引機制
-4. 目錄結構與路徑解析
-5. 檔案 I/O 操作
-6. 儲存抽象化設計
-
-## 未來擴展
-
-可考慮添加的功能：
-
-- [ ] 權限管理（User/Group/Other）
-- [ ] 符號連結
-- [ ] 硬連結支援
-- [ ] 檔案系統修復工具
-- [ ] 三重間接區塊
-- [ ] 日誌功能
-
-## 授權
-
-此專案為教育目的開發。
-
-## 作者
-
-銘傳大學 - 作業系統課程實作
+這是一個簡單的 Inode 基礎檔案系統實作，旨在模擬 Unix-like 檔案系統的核心概念。
+本專案包含以下特性：
+*   **磁碟模擬**：使用 `disk.img` (16MB) 模擬物理磁碟。
+*   **Inode 結構**：每個檔案/目錄由一個 64-byte 的 Inode 描述。
+*   **目錄管理**：支援目錄的創建、刪除與嵌套。
+*   **檔案操作**：支援檔案的創建、讀取、寫入與刪除。
+*   **持久化**：所有數據皆寫入 `disk.img`，程式重啟後資料依然存在。
 
 ---
 
-**注意**: 執行程式後會在當前目錄生成 `filesystem.img` 檔案（約 4MB），這是模擬的磁碟映像檔。
+## 🛠️ 編譯與建置 (Build)
+
+本專案使用 C++ 編寫，並提供 Windows 批次檔以快速建置。
+
+### 前置需求
+*   已安裝 MinGW-w64 (g++) 編譯器，並已加入環境變數 path。
+
+### 一鍵編譯
+直接雙擊執行根目錄下的 `build.bat`，或在終端機輸入：
+```cmd
+.\build.bat
+```
+成功後將產生以下三個執行檔：
+1.  **`minifs.exe`**: 自動化測試程式（執行預設的測試腳本）。
+2.  **`shell.exe`**: 互動式命令列介面 (CLI)。
+3.  **`gui.exe`**: 圖形化檔案管理器 (GUI)。
+
+---
+
+## 🚀 操作指南 (Operation Guide)
+
+### 1. 自動化測試 (`minifs.exe`)
+此程式會自動執行一系列測試，包含格式化、創建目錄、寫入檔案、刪除檔案與持久化驗證。
+*   **執行方法**: `.\minifs.exe`
+*   **用途**: 快速驗證系統核心功能是否正常。
+
+### 2. 互動式 Shell (`shell.exe`)
+提供類似 Linux 的命令列環境，讓您手動操作檔案系統。
+*   **執行方法**: `.\shell.exe`
+*   **可用指令**:
+
+    **[規格書要求指令]**
+    *   `mkfs <disk>`: 建立新的檔案系統 (格式化)
+    *   `ls [path]`: 列出目錄內容
+    *   `mkdir [path]`: 建立目錄
+    *   `rmdir [path]`: 刪除空目錄
+    *   `touch [path]`: 建立新檔案
+    *   `rm [path]`: 刪除檔案
+    *   `cat [path]`: 顯示檔案內容
+    *   `append [path] "text"`: 將文字附加到檔尾
+    *   `stat [path]`: 顯示 Inode 資訊（大小、編號、區塊數）
+
+    **[額外擴充功能]**
+    *   `cd [path]`: 切換當前工作目錄 (Shell 模擬導航)
+    *   `write [path] [content]`: 覆寫模式寫入檔案
+    *   `gui`: (需執行 `gui.exe`) 啟動視窗介面管理
+    *   `format`: `mkfs` 的別名
+    *   `info`: 顯示磁碟與 Inode 使用狀況
+    *   `exit`: 離開 Shell
+
+**範例**:
+```text
+minifs:/> mkfs disk.img
+minifs:/> mkdir docs
+minifs:/> touch docs/readme.txt
+minifs:/> append docs/readme.txt "Hello MiniFS!"
+minifs:/> cat docs/readme.txt
+Hello MiniFS!
+```
+
+### 3. 圖形化介面 (`gui.exe`)
+提供 Windows 原生視窗介面，直觀管理檔案。
+*   **執行方法**: `.\gui.exe`
+*   **功能**:
+    *   **瀏覽**: 顯示當前目錄下的檔案與資料夾。
+    *   **導航**: 雙擊 `[Folder]` 進入目錄，雙擊 `[..]` 或點擊 `Up` 按鈕返回上一層。
+    *   **查看**: 雙擊檔案可彈出視窗顯示內容。
+    *   **操作**:
+        *   `New Folder`: 在當前目錄創建新資料夾 (命名為 `NewFolderX`)。
+        *   `New File`: 在當前目錄創建新檔案 (命名為 `NewFileX`)。
+        *   `Delete`: 刪除選取的檔案或目錄。
+
+---
+
+## 📂 系統規格 (System Specification)
+
+*   **總容量**: 16 MB
+*   **區塊大小 (Block Size)**: 4096 bytes (4KB)
+*   **Inode 大小**: 64 bytes
+*   **最大檔案大小**: 16 KB (4 個直接區塊)
+*   **檔名限制**: 28 字元
+
+## 📝 專案結構
+
+```
+inode-file-system/
+├── build.bat           # 建置腳本 (一鍵編譯)
+├── disk.img            # 虛擬磁碟映像檔 (程式執行後產生)
+├── include/            # 標頭檔
+│   ├── config.h        # 系統參數設定
+│   ├── structures.h    # 資料結構定義 (Superblock, Inode, Dentry)
+│   └── ...
+├── src/                # 原始碼
+│   ├── main.cpp        # 自動化測試主程式
+│   ├── Shell.cpp       # 互動式 Shell 主程式
+│   ├── GuiMain.cpp     # GUI 主程式
+│   ├── FileSystem.cpp  # 檔案系統核心邏輯
+│   ├── InodeManager.cpp# Inode 與區塊管理
+│   ├── DiskEmulator.cpp# 磁碟讀寫模擬
+│   └── Bitmap.cpp      # Bitmap 管理
+└── README.md           # 說明文件
+```
