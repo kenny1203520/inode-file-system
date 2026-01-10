@@ -64,6 +64,7 @@ int main() {
         if (args.empty()) continue;
 
         std::string cmd = args[0];
+        for (auto &c: cmd) c = tolower(c);
 
         if (cmd == "exit") {
             break;
